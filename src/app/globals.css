@@ -1,0 +1,397 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: "Noto Sans Thai", "IBM Plex Sans Thai", "Sarabun", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+/* Light theme (ค่าเริ่มต้นสำหรับ :root) */
+:root {
+  --radius: 0.75rem;
+  --background: oklch(0.99 0.004 260);
+  --foreground: oklch(0.18 0.012 260);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.012 260);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0.012 260);
+  --primary: oklch(0.65 0.15 40);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.95 0.005 260);
+  --secondary-foreground: oklch(0.18 0.012 260);
+  --muted: oklch(0.96 0.005 260);
+  --muted-foreground: oklch(0.45 0.012 260);
+  --accent: oklch(0.94 0.01 260);
+  --accent-foreground: oklch(0.18 0.012 260);
+  --destructive: oklch(0.55 0.22 25);
+  --border: oklch(0 0 0 / 10%);
+  --input: oklch(0 0 0 / 8%);
+  --ring: oklch(0.65 0.15 40);
+  --chart-1: oklch(0.65 0.15 40);
+  --chart-2: oklch(0.60 0.15 80);
+  --chart-3: oklch(0.55 0.20 30);
+  --chart-4: oklch(0.50 0.15 280);
+  --chart-5: oklch(0.55 0.16 200);
+  --sidebar: oklch(0.98 0.005 260);
+  --sidebar-foreground: oklch(0.18 0.012 260);
+  --sidebar-primary: oklch(0.65 0.15 40);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.95 0.005 260);
+  --sidebar-accent-foreground: oklch(0.18 0.012 260);
+  --sidebar-border: oklch(0 0 0 / 10%);
+  --sidebar-ring: oklch(0.65 0.15 40);
+}
+
+/* Dark theme - Z.ai Chat style */
+.dark {
+  --background: oklch(0.16 0.012 260);
+  --foreground: oklch(0.96 0.005 260);
+  --card: oklch(0.20 0.014 260);
+  --card-foreground: oklch(0.96 0.005 260);
+  --popover: oklch(0.20 0.014 260);
+  --popover-foreground: oklch(0.96 0.005 260);
+  --primary: oklch(0.72 0.16 40);
+  --primary-foreground: oklch(0.16 0.012 260);
+  --secondary: oklch(0.26 0.014 260);
+  --secondary-foreground: oklch(0.96 0.005 260);
+  --muted: oklch(0.24 0.012 260);
+  --muted-foreground: oklch(0.68 0.012 260);
+  --accent: oklch(0.30 0.02 260);
+  --accent-foreground: oklch(0.96 0.005 260);
+  --destructive: oklch(0.65 0.22 25);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 10%);
+  --ring: oklch(0.72 0.16 40);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "kern" 1, "liga" 1;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* Custom scrollbar - สไตล์ Z.ai */
+@layer utilities {
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: color-mix(in oklch, var(--foreground) 15%, transparent);
+    border-radius: 9999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklch, var(--foreground) 25%, transparent);
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in oklch, var(--foreground) 15%, transparent) transparent;
+  }
+  .glass {
+    background: color-mix(in oklch, var(--background) 70%, transparent);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+  }
+  .text-balance {
+    text-wrap: balance;
+  }
+  .gradient-text {
+    background: linear-gradient(135deg, var(--primary), oklch(0.68 0.16 60));
+    -webkit-background-clip: text !important;
+    background-clip: text !important;
+    -webkit-text-fill-color: transparent !important;
+    color: transparent;
+  }
+}
+
+/* แอนิเมชันสำหรับการโหลด */
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.animate-pulse-soft {
+  animation: pulse-soft 1.5s ease-in-out infinite;
+}
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* Skeleton shimmer effect */
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--muted) 60%, transparent) 25%,
+    color-mix(in oklch, var(--muted) 80%, transparent) 50%,
+    color-mix(in oklch, var(--muted) 60%, transparent) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
+/* Slide in from left */
+@keyframes slide-in-left {
+  from { opacity: 0; transform: translateX(-12px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.animate-slide-in-left {
+  animation: slide-in-left 0.25s ease-out;
+}
+
+/* Scale in */
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+.animate-scale-in {
+  animation: scale-in 0.2s ease-out;
+}
+
+/* Glow pulse for primary elements */
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 30%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 10%, transparent); }
+}
+.animate-glow-pulse {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
+/* Pixel art character animations (legacy PixelArtIcon — kept for backward compat) */
+@keyframes pixel-jump {
+  0%   { transform: translateY(0)    scaleY(1); }
+  10%  { transform: translateY(1px)  scaleY(0.95); }
+  35%  { transform: translateY(-8px) scaleY(1.05); }
+  55%  { transform: translateY(-8px) scaleY(1.05); }
+  80%  { transform: translateY(0)    scaleY(0.95); }
+  90%  { transform: translateY(0)    scaleY(1.02); }
+  100% { transform: translateY(0)    scaleY(1); }
+}
+.animate-pixel-jump {
+  animation: pixel-jump 1.8s ease-in-out infinite;
+}
+
+@keyframes pixel-blink {
+  0%, 90%, 100% { transform: scaleY(1); }
+  93% { transform: scaleY(0.1); }
+  96% { transform: scaleY(1); }
+}
+.animate-pixel-blink {
+  animation: pixel-blink 4s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@keyframes pixel-shadow {
+  0%   { transform: translateX(-50%) scale(1);    opacity: 0.18; }
+  10%  { transform: translateX(-50%) scale(1.05); opacity: 0.2; }
+  35%  { transform: translateX(-50%) scale(0.55); opacity: 0.1; }
+  55%  { transform: translateX(-50%) scale(0.55); opacity: 0.1; }
+  80%  { transform: translateX(-50%) scale(1.1);  opacity: 0.22; }
+  100% { transform: translateX(-50%) scale(1);    opacity: 0.18; }
+}
+.animate-pixel-shadow {
+  animation: pixel-shadow 1.8s ease-in-out infinite;
+}
+
+/* ============================================================
+   Pixel Mascot — AxiomCore (Sticker Edition)
+   ============================================================ */
+.pixel-sticker {
+  --base-unit: 4px;
+  --character-color: #d9815d;
+  --eye-color: #1a1a1a;
+  --sticker-border-color: #ffffff;
+  display: inline-block;
+  position: relative;
+  line-height: 0;
+}
+
+/* ขอบสติกเกอร์สีขาว — drop-shadow 8 ทิศทาง */
+.pixel-sticker--bordered {
+  filter:
+    drop-shadow(1px 0px 0px var(--sticker-border-color))
+    drop-shadow(-1px 0px 0px var(--sticker-border-color))
+    drop-shadow(0px 1px 0px var(--sticker-border-color))
+    drop-shadow(0px -1px 0px var(--sticker-border-color))
+    drop-shadow(calc(var(--base-unit) * 0.5) 0px 0px var(--sticker-border-color))
+    drop-shadow(calc(var(--base-unit) * -0.5) 0px 0px var(--sticker-border-color))
+    drop-shadow(0px calc(var(--base-unit) * 0.5) 0px var(--sticker-border-color))
+    drop-shadow(0px calc(var(--base-unit) * -0.5) 0px var(--sticker-border-color));
+}
+
+.pixel-shadow-wrap { position: relative; display: inline-block; }
+
+/* เงาใต้ตัว — หดตอนลอยสูง ขยายตอนแตะพื้น */
+.pixel-ground-shadow {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--base-unit) * -0.6);
+  width: calc(9 * var(--base-unit));
+  height: calc(var(--base-unit) * 0.8);
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 50%;
+  transform: translateX(-50%) scale(1);
+  filter: blur(1px);
+  z-index: -1;
+  pointer-events: none;
+}
+.pixel-ground-shadow--animated {
+  animation: pixel-shadow-pulse 1.8s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+/* ตัวที่กระโดด — squash-and-stretch */
+.pixel-jump-wrap {
+  display: inline-block;
+  transform-origin: center bottom;
+}
+.pixel-jump-wrap--animated {
+  animation: pixel-jump-mascot 1.8s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* ตารางลำตัว: 9 แถว × 15 คอลัมน์ */
+.pixel-character-body {
+  display: grid;
+  grid-template-columns: repeat(15, var(--base-unit));
+  grid-template-rows: repeat(9, var(--base-unit));
+}
+.pixel-legs-row {
+  display: grid;
+  grid-template-columns: repeat(15, var(--base-unit));
+}
+.pixel-cell { width: var(--base-unit); height: var(--base-unit); }
+.pixel-cell--p { background-color: var(--character-color); }
+.pixel-cell--e { background-color: var(--eye-color); transform-origin: center; }
+.pixel-cell--e-animated {
+  animation: pixel-blink 4s ease-in-out infinite;
+  will-change: transform;
+}
+.pixel-cell--_ { background-color: transparent; }
+
+/* ขา แยกซ้าย-ขวา ขยับอิสระ */
+.pixel-leg-cell { display: grid; grid-template-rows: repeat(3, var(--base-unit)); }
+.pixel-leg-left { transform-origin: top center; }
+.pixel-leg-right { transform-origin: top center; }
+.pixel-leg-left--animated {
+  animation: pixel-leg-left 1.8s ease-in-out infinite;
+  will-change: transform;
+}
+.pixel-leg-right--animated {
+  animation: pixel-leg-right 1.8s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* ===== KEYFRAMES (PixelMascot) ===== */
+
+/* ลำตัวลอยขึ้น-ลง แบบกระโดด: ย่อก่อนเด้ง → พุ่งขึ้น → ร่วงลงมาย่อรับ */
+/* ใช้ calc(var(--base-unit) * N) เพื่อให้สเกลตาม size prop — ที่ size=5 จะได้ -16px เทียบเท่า reference */
+@keyframes pixel-jump-mascot {
+  0%   { transform: translateY(0) scaleY(1); }
+  10%  { transform: translateY(calc(var(--base-unit) * 0.4)) scaleY(0.92); }
+  35%  { transform: translateY(calc(var(--base-unit) * -3.2)) scaleY(1.05); }
+  55%  { transform: translateY(calc(var(--base-unit) * -3.2)) scaleY(1.05); }
+  80%  { transform: translateY(0) scaleY(0.92); }
+  90%  { transform: translateY(0) scaleY(1.02); }
+  100% { transform: translateY(0) scaleY(1); }
+}
+
+/* ขาซ้าย: งอเก็บขึ้นช่วงลอยตัว แล้วเหยียดยาวลงรับพื้น */
+@keyframes pixel-leg-left {
+  0%   { transform: translateY(0) scaleY(1) rotate(0deg); }
+  10%  { transform: translateY(0) scaleY(0.85) rotate(2deg); }
+  35%  { transform: translateY(calc(var(--base-unit) * -0.6)) scaleY(0.55) rotate(-8deg); }
+  55%  { transform: translateY(calc(var(--base-unit) * -0.6)) scaleY(0.55) rotate(-8deg); }
+  80%  { transform: translateY(0) scaleY(1.1) rotate(4deg); }
+  90%  { transform: translateY(0) scaleY(0.95) rotate(0deg); }
+  100% { transform: translateY(0) scaleY(1) rotate(0deg); }
+}
+
+/* ขาขวา: สลับจังหวะเล็กน้อยกับขาซ้าย */
+@keyframes pixel-leg-right {
+  0%   { transform: translateY(0) scaleY(1) rotate(0deg); }
+  10%  { transform: translateY(0) scaleY(0.85) rotate(-2deg); }
+  35%  { transform: translateY(calc(var(--base-unit) * -0.6)) scaleY(0.55) rotate(8deg); }
+  55%  { transform: translateY(calc(var(--base-unit) * -0.6)) scaleY(0.55) rotate(8deg); }
+  80%  { transform: translateY(0) scaleY(1.1) rotate(-4deg); }
+  90%  { transform: translateY(0) scaleY(0.95) rotate(0deg); }
+  100% { transform: translateY(0) scaleY(1) rotate(0deg); }
+}
+
+/* เงาใต้ตัว หดตอนตัวลอยสูง ขยายตอนแตะพื้น */
+@keyframes pixel-shadow-pulse {
+  0%   { transform: translateX(-50%) scale(1); opacity: 0.2; }
+  10%  { transform: translateX(-50%) scale(1.05); opacity: 0.22; }
+  35%  { transform: translateX(-50%) scale(0.55); opacity: 0.1; }
+  55%  { transform: translateX(-50%) scale(0.55); opacity: 0.1; }
+  80%  { transform: translateX(-50%) scale(1.1); opacity: 0.24; }
+  100% { transform: translateX(-50%) scale(1); opacity: 0.2; }
+}
+
+/* เคารพผู้ใช้ที่ตั้งค่าลดการเคลื่อนไหว */
+@media (prefers-reduced-motion: reduce) {
+  .pixel-jump-wrap--animated,
+  .pixel-leg-left--animated,
+  .pixel-leg-right--animated,
+  .pixel-ground-shadow--animated,
+  .pixel-cell--e-animated {
+    animation: none;
+  }
+}
