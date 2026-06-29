@@ -1,0 +1,724 @@
+     1→     1→'use client';
+     2→     2→
+     3→     3→import { useState, useRef, useEffect, useCallback } from 'react';
+     4→     4→import { Button } from '@/components/ui/button';
+     5→     5→import { Textarea } from '@/components/ui/textarea';
+     6→     6→import { Badge } from '@/components/ui/badge';
+     7→     7→import {
+     8→     8→  Sheet,
+     9→     9→  SheetContent,
+    10→    10→  SheetDescription,
+    11→    11→  SheetHeader,
+    12→    12→  SheetTitle,
+    13→    13→  SheetTrigger,
+    14→    14→} from '@/components/ui/sheet';
+    15→    15→import {
+    16→    16→  Tooltip,
+    17→    17→  TooltipContent,
+    18→    18→  TooltipProvider,
+    19→    19→  TooltipTrigger,
+    20→    20→} from '@/components/ui/tooltip';
+    21→    21→import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+    22→    22→import { AnalysisResultView } from '@/components/axiom/analysis-result-view';
+    23→    23→import { InfoPanel } from '@/components/axiom/info-panel';
+    24→    24→import { KnowledgeBase } from '@/components/axiom/knowledge-base';
+    25→    25→import { SessionHistory, type SessionMessage } from '@/components/axiom/session-history';
+    26→    26→import { BatchAnalysis } from '@/components/axiom/batch-analysis';
+    27→    27→import { StatsDashboard } from '@/components/axiom/stats-dashboard';
+    28→    28→import { ThemeToggle } from '@/components/axiom/theme';
+    29→    29→import { OnboardingOverlay, HelpButton } from '@/components/axiom/onboarding-overlay';
+    30→    30→import { AnalysisSkeleton } from '@/components/axiom/analysis-skeleton';
+    31→    31→import { MobileOverflowMenu } from '@/components/axiom/mobile-overflow-menu';
+    32→    32→import { CompareView } from '@/components/axiom/compare-view';
+    33→    33→import { KeyboardShortcutsHelp, ShortcutsHelpButton } from '@/components/axiom/keyboard-shortcuts-help';
+    34→    34→import { PixelMascot } from '@/components/pixel-mascot';
+    35→    35→import type { AnalysisResult } from '@/lib/engine/types';
+    36→    36→import {
+    37→    37→  Send,
+    38→    38→  Trash2,
+    39→    39→  Info,
+    40→    40→  AlertTriangle,
+    41→    41→  Loader2,
+    42→    42→  User,
+    43→    43→  Brain,
+    44→    44→  Database,
+    45→    45→  Zap,
+    46→    46→  PanelLeft,
+    47→    47→  PanelLeftClose,
+    48→    48→  PanelLeftOpen,
+    49→    49→  BookOpen,
+    50→    50→  Plus,
+    51→    51→  BarChart3,
+    52→    52→} from 'lucide-react';
+    53→    53→import { cn } from '@/lib/core';
+    54→    54→import { toast } from 'sonner';
+    55→    55→
+    56→    56→interface ChatMessage {
+    57→    57→  id: string;
+    58→    58→  role: 'user' | 'assistant';
+    59→    59→  content: string;
+    60→    60→  result?: AnalysisResult;
+    61→    61→  loading?: boolean;
+    62→    62→  error?: string;
+    63→    63→}
+    64→    64→
+    65→    65→export default function Home() {
+    66→    66→  const [messages, setMessages] = useState<ChatMessage[]>([]);
+    67→    67→  const [input, setInput] = useState('');
+    68→    68→  const [analyzing, setAnalyzing] = useState(false);
+    69→    69→  const [sessionId, setSessionId] = useState<string | null>(null);
+    70→    70→  const [sidebarOpen, setSidebarOpen] = useState(false);
+    71→    71→  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+    72→    72→  const [activeTab, setActiveTab] = useState('history');
+    73→    73→  const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
+    74→    74→  const [knowledgeOpen, setKnowledgeOpen] = useState(false);
+    75→    75→  const [infoOpen, setInfoOpen] = useState(false);
+    76→    76→  const [statsOpen, setStatsOpen] = useState(false);
+    77→    77→  const [compareOpen, setCompareOpen] = useState(false);
+    78→    78→  const [compareA, setCompareA] = useState<string | null>(null);
+    79→    79→  const [compareB, setCompareB] = useState<string | null>(null);
+    80→    80→  const scrollRef = useRef<HTMLDivElement>(null);
+    81→    81→  const textareaRef = useRef<HTMLTextAreaElement>(null);
+    82→    82→  const lastAssistantRef = useRef<HTMLDivElement>(null);
+    83→    83→
+    84→    84→  // Scroll ไปที่หัวของคำตอบ AxiomCore ล่าสุด (ไม่ใช่ล่างสุด)
+    85→    85→  // ใช้ scroll ครั้งเดียวเพื่อหลีกเลี่ยงการเด้ง
+    86→    86→  const scrollToLatestResponse = useCallback(() => {
+    87→    87→    requestAnimationFrame(() => {
+    88→    88→      if (lastAssistantRef.current) {
+    89→    89→        lastAssistantRef.current.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    90→    90→      }
+    91→    91→    });
+    92→    92→  }, []);
+    93→    93→
+    94→    94→  useEffect(() => {
+    95→    95→    // ยิง scroll เฉพาะเมื่อมีการเพิ่ม message ใหม่ (ไม่ใช่ update loading → result)
+    96→    96→    const lastMsg = messages[messages.length - 1];
+    97→    97→    if (lastMsg && !lastMsg.loading) {
+    98→    98→      scrollToLatestResponse();
+    99→    99→    }
+   100→   100→  }, [messages.length, scrollToLatestResponse]);
+   101→   101→
+   102→   102→  // ปรับความสูง textarea อัตโนมัติ
+   103→   103→  useEffect(() => {
+   104→   104→    if (textareaRef.current) {
+   105→   105→      textareaRef.current.style.height = 'auto';
+   106→   106→      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + 'px';
+   107→   107→    }
+   108→   108→  }, [input]);
+   109→   109→
+   110→   110→  // Keyboard shortcuts ทั่วโลก
+   111→   111→  useEffect(() => {
+   112→   112→    const handler = (e: KeyboardEvent) => {
+   113→   113→      // Ctrl/Cmd + / โฟกัสที่ textarea
+   114→   114→      if ((e.ctrlKey || e.metaKey) && e.key === '/') {
+   115→   115→        e.preventDefault();
+   116→   116→        textareaRef.current?.focus();
+   117→   117→      }
+   118→   118→      // Ctrl/Cmd + Shift + N สร้าง session ใหม่
+   119→   119→      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'n' || e.key === 'N')) {
+   120→   120→        e.preventDefault();
+   121→   121→        startNewSession();
+   122→   122→        toast.success('เริ่มบทสนทนาใหม่');
+   123→   123→      }
+   124→   124→    };
+   125→   125→    window.addEventListener('keydown', handler);
+   126→   126→    return () => window.removeEventListener('keydown', handler);
+   127→   127→  }, []);
+   128→   128→
+   129→   129→  // โหลด session ที่ active ล่าสุดตอนเริ่มต้น (optional - leave empty for new chat)
+   130→   130→  const ensureSession = async (): Promise<string> => {
+   131→   131→    if (sessionId) return sessionId;
+   132→   132→    try {
+   133→   133→      const res = await fetch('/api/sessions', {
+   134→   134→        cache: 'no-store',
+   135→   135→        method: 'POST',
+   136→   136→        headers: { 'Content-Type': 'application/json' },
+   137→   137→        body: JSON.stringify({ title: 'การวิเคราะห์ใหม่' }),
+   138→   138→      });
+   139→   139→      const data = await res.json();
+   140→   140→      if (data.ok) {
+   141→   141→        setSessionId(data.session.id);
+   142→   142→        setSessionRefreshKey((k) => k + 1);
+   143→   143→        return data.session.id;
+   144→   144→      }
+   145→   145→    } catch {
+   146→   146→      // ignore
+   147→   147→    }
+   148→   148→    return '';
+   149→   149→  };
+   150→   150→
+   151→   151→  const analyze = async (text: string) => {
+   152→   152→    // Add user message + loading message IMMEDIATELY (before session creation)
+   153→   153→    const userMsg: ChatMessage = {
+   154→   154→      id: `u-${Date.now()}`,
+   155→   155→      role: 'user',
+   156→   156→      content: text,
+   157→   157→    };
+   158→   158→    const loadingMsg: ChatMessage = {
+   159→   159→      id: `a-${Date.now()}`,
+   160→   160→      role: 'assistant',
+   161→   161→      content: 'กำลังวิเคราะห์...',
+   162→   162→      loading: true,
+   163→   163→    };
+   164→   164→    setMessages((prev) => [...prev, userMsg, loadingMsg]);
+   165→   165→    setAnalyzing(true);
+   166→   166→
+   167→   167→    // Create session in background (don't block UI)
+   168→   168→    const sid = await ensureSession();
+   169→   169→
+   170→   170→    try {
+   171→   171→      const res = await fetch('/api/analyze', {
+   172→   172→        method: 'POST',
+   173→   173→        headers: { 'Content-Type': 'application/json' },
+   174→   174→        body: JSON.stringify({ text, sessionId: sid || undefined }),
+   175→   175→        cache: 'no-store',
+   176→   176→      });
+   177→   177→      const data = await res.json();
+   178→   178→      if (!res.ok || !data.ok) {
+   179→   179→        throw new Error(data.error || 'วิเคราะห์ไม่สำเร็จ');
+   180→   180→      }
+   181→   181→      setMessages((prev) =>
+   182→   182→        prev.map((m) =>
+   183→   183→          m.id === loadingMsg.id
+   184→   184→            ? {
+   185→   185→                ...m,
+   186→   186→                content: data.result.summary,
+   187→   187→                result: data.result as AnalysisResult,
+   188→   188→                loading: false,
+   189→   189→              }
+   190→   190→            : m,
+   191→   191→        ),
+   192→   192→      );
+   193→   193→      // อัปเดตชื่อ session ถ้าเป็นข้อความแรก
+   194→   194→      if (messages.length === 0 && sid) {
+   195→   195→        await fetch(`/api/sessions/${encodeURIComponent(sid)}`, {
+   196→   196→          method: 'PATCH',
+   197→   197→          headers: { 'Content-Type': 'application/json' },
+   198→   198→          body: JSON.stringify({ title: text.slice(0, 60) }),
+   199→   199→        }).catch(() => {});
+   200→   200→      }
+   201→   201→      setSessionRefreshKey((k) => k + 1);
+   202→   202→    } catch (e) {
+   203→   203→      const msg = e instanceof Error ? e.message : 'เกิดข้อผิดพลาด';
+   204→   204→      setMessages((prev) =>
+   205→   205→        prev.map((m) =>
+   206→   206→          m.id === loadingMsg.id
+   207→   207→            ? { ...m, content: 'เกิดข้อผิดพลาดในการวิเคราะห์', error: msg, loading: false }
+   208→   208→            : m,
+   209→   209→        ),
+   210→   210→      );
+   211→   211→      toast.error(msg);
+   212→   212→    } finally {
+   213→   213→      setAnalyzing(false);
+   214→   214→    }
+   215→   215→  };
+   216→   216→
+   217→   217→  const handleSubmit = (e?: React.FormEvent) => {
+   218→   218→    e?.preventDefault();
+   219→   219→    const text = input.trim();
+   220→   220→    if (!text || analyzing) return;
+   221→   221→    setInput('');
+   222→   222→    void analyze(text);
+   223→   223→  };
+   224→   224→
+   225→   225→  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+   226→   226→    if (e.key === 'Enter' && !e.shiftKey) {
+   227→   227→      e.preventDefault();
+   228→   228→      handleSubmit();
+   229→   229→    }
+   230→   230→  };
+   231→   231→
+   232→   232→  const clearChat = () => {
+   233→   233→    setMessages([]);
+   234→   234→    setSessionId(null);
+   235→   235→    setSessionRefreshKey((k) => k + 1);
+   236→   236→    toast.success('เริ่มบทสนทนาใหม่');
+   237→   237→  };
+   238→   238→
+   239→   239→  const startNewSession = () => {
+   240→   240→    setMessages([]);
+   241→   241→    setSessionId(null);
+   242→   242→    setSessionRefreshKey((k) => k + 1);
+   243→   243→    setSidebarOpen(false);
+   244→   244→  };
+   245→   245→
+   246→   246→  const handleSelectSession = (sid: string, sessionMessages: SessionMessage[]) => {
+   247→   247→    setSessionId(sid);
+   248→   248→    const mapped: ChatMessage[] = sessionMessages.map((m) => ({
+   249→   249→      id: m.id,
+   250→   250→      role: m.role as 'user' | 'assistant',
+   251→   251→      content: m.content,
+   252→   252→      result: m.result ?? undefined,
+   253→   253→      loading: false,
+   254→   254→    }));
+   255→   255→    setMessages(mapped);
+   256→   256→    setSidebarOpen(false);
+   257→   257→    toast.success('โหลด session แล้ว');
+   258→   258→  };
+   259→   259→
+   260→   260→  const handleCompare = (sidA: string, sidB: string) => {
+   261→   261→    setCompareA(sidA);
+   262→   262→    setCompareB(sidB);
+   263→   263→    setCompareOpen(true);
+   264→   264→    setSidebarOpen(false);
+   265→   265→  };
+   266→   266→
+   267→   267→  return (
+   268→   268→    <div className="flex h-screen bg-background">
+   269→   269→      {/* Desktop sidebar */}
+   270→   270→      <aside className={cn(
+   271→   271→        'hidden shrink-0 border-r border-border/40 bg-sidebar/40 transition-all duration-200 lg:flex lg:flex-col',
+   272→   272→        sidebarCollapsed ? 'w-14' : 'w-72'
+   273→   273→      )}>
+   274→   274→        {sidebarCollapsed ? (
+   275→   275→          <CollapsedSidebar
+   276→   276→            activeTab={activeTab}
+   277→   277→            setActiveTab={setActiveTab}
+   278→   278→            onExpand={() => setSidebarCollapsed(false)}
+   279→   279→            onNewSession={startNewSession}
+   280→   280→          />
+   281→   281→        ) : (
+   282→   282→          <SidebarContent
+   283→   283→            activeSessionId={sessionId}
+   284→   284→            onSelectSession={handleSelectSession}
+   285→   285→            onNewSession={startNewSession}
+   286→   286→            refreshKey={sessionRefreshKey}
+   287→   287→            onCompare={handleCompare}
+   288→   288→            onCollapse={() => setSidebarCollapsed(true)}
+   289→   289→            activeTab={activeTab}
+   290→   290→            setActiveTab={setActiveTab}
+   291→   291→          />
+   292→   292→        )}
+   293→   293→      </aside>
+   294→   294→
+   295→   295→      {/* Mobile sidebar drawer */}
+   296→   296→      <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+   297→   297→        <SheetContent side="left" className="w-full p-0 sm:max-w-xs">
+   298→   298→          <SheetHeader className="sr-only">
+   299→   299→            <SheetTitle>เมนู AxiomCore</SheetTitle>
+   300→   300→            <SheetDescription>ประวัติการวิเคราะห์และฐานความรู้</SheetDescription>
+   301→   301→          </SheetHeader>
+   302→   302→          <div className="flex h-full flex-col p-3">
+   303→   303→            <SidebarContent
+   304→   304→              activeSessionId={sessionId}
+   305→   305→              onSelectSession={handleSelectSession}
+   306→   306→              onNewSession={startNewSession}
+   307→   307→              refreshKey={sessionRefreshKey}
+   308→   308→              onCompare={handleCompare}
+   309→   309→            />
+   310→   310→          </div>
+   311→   311→        </SheetContent>
+   312→   312→      </Sheet>
+   313→   313→
+   314→   314→      {/* Main column */}
+   315→   315→      <div className="flex min-w-0 flex-1 flex-col">
+   316→   316→        {/* Header */}
+   317→   317→        <header className="glass sticky top-0 z-30 border-b border-border/50">
+   318→   318→          <div className="flex h-14 items-center justify-between px-3 sm:px-4">
+   319→   319→            <div className="flex items-center gap-2.5">
+   320→   320→              <Button
+   321→   321→                variant="ghost"
+   322→   322→                size="icon"
+   323→   323→                className="h-8 w-8 lg:hidden"
+   324→   324→                onClick={() => setSidebarOpen(true)}
+   325→   325→                aria-label="เปิดเมนู"
+   326→   326→              >
+   327→   327→                <PanelLeft className="h-4 w-4" />
+   328→   328→              </Button>
+   329→   329→              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/15">
+   330→   330→                <PixelMascot size={2} animated={false} border={false} />
+   331→   331→              </div>
+   332→   332→              <div className="flex flex-col">
+   333→   333→                <h1 className="text-sm font-semibold leading-none">AxiomCore</h1>
+   334→   334→                <span className="text-[10px] text-muted-foreground">ระบบวิเคราะห์ตรรกะวิบัติ</span>
+   335→   335→              </div>
+   336→   336→            </div>
+   337→   337→            <div className="flex items-center gap-1.5">
+   338→   338→              <TooltipProvider delayDuration={300}>
+   339→   339→                <Tooltip>
+   340→   340→                  <TooltipTrigger asChild>
+   341→   341→                    <Badge variant="outline" className="hidden border-primary/30 bg-primary/10 text-primary sm:inline-flex">
+   342→   342→                      <Zap className="mr-1 h-3 w-3" />
+   343→   343→                      12 ประเภท
+   344→   344→                    </Badge>
+   345→   345→                  </TooltipTrigger>
+   346→   346→                  <TooltipContent>ตรวจจับตรรกะวิบัติ 12 ประเภท</TooltipContent>
+   347→   347→                </Tooltip>
+   348→   348→              </TooltipProvider>
+   349→   349→
+   350→   350→              {/* Batch analysis button - opens dialog */}
+   351→   351→              <BatchAnalysis />
+   352→   352→
+   353→   353→              {/* Knowledge base button - opens sheet (desktop only trigger) */}
+   354→   354→              <Sheet open={knowledgeOpen} onOpenChange={setKnowledgeOpen}>
+   355→   355→                <SheetTrigger asChild>
+   356→   356→                  <Button variant="ghost" size="icon" className="hidden h-8 w-8 lg:inline-flex" aria-label="ฐานความรู้">
+   357→   357→                    <BookOpen className="h-4 w-4" />
+   358→   358→                  </Button>
+   359→   359→                </SheetTrigger>
+   360→   360→                <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
+   361→   361→                  <SheetHeader>
+   362→   362→                    <SheetTitle className="flex items-center gap-2">
+   363→   363→                      <BookOpen className="h-4 w-4 text-primary" />
+   364→   364→                      ฐานความรู้ตรรกะวิบัติ
+   365→   365→                    </SheetTitle>
+   366→   366→                    <SheetDescription className="sr-only">
+   367→   367→                      เรียกดูรายละเอียดและตัวอย่างของตรรกะวิบัติทั้ง 12 ประเภท
+   368→   368→                    </SheetDescription>
+   369→   369→                  </SheetHeader>
+   370→   370→                  <div className="mt-4 px-1">
+   371→   371→                    <KnowledgeBase />
+   372→   372→                  </div>
+   373→   373→                </SheetContent>
+   374→   374→              </Sheet>
+   375→   375→
+   376→   376→              {/* Info button (desktop only trigger) */}
+   377→   377→              <Sheet open={infoOpen} onOpenChange={setInfoOpen}>
+   378→   378→                <SheetTrigger asChild>
+   379→   379→                  <Button variant="ghost" size="icon" className="hidden h-8 w-8 lg:inline-flex" aria-label="ข้อมูลระบบ">
+   380→   380→                    <Info className="h-4 w-4" />
+   381→   381→                  </Button>
+   382→   382→                </SheetTrigger>
+   383→   383→                <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
+   384→   384→                  <SheetHeader>
+   385→   385→                    <SheetTitle className="flex items-center gap-2">
+   386→   386→                      <Database className="h-4 w-4 text-primary" />
+   387→   387→                      ข้อมูลระบบ AxiomCore
+   388→   388→                    </SheetTitle>
+   389→   389→                    <SheetDescription className="sr-only">
+   390→   390→                      สถิติชุดข้อมูล จำนวนตัวอย่าง กฎตรวจจับ และเครื่องมือสร้างข้อมูล
+   391→   391→                    </SheetDescription>
+   392→   392→                  </SheetHeader>
+   393→   393→                  <div className="mt-4 px-1">
+   394→   394→                    <InfoPanel />
+   395→   395→                  </div>
+   396→   396→                </SheetContent>
+   397→   397→              </Sheet>
+   398→   398→
+   399→   399→              {/* Stats dashboard button (desktop only trigger) */}
+   400→   400→              <Sheet open={statsOpen} onOpenChange={setStatsOpen}>
+   401→   401→                <SheetTrigger asChild>
+   402→   402→                  <Button variant="ghost" size="icon" className="hidden h-8 w-8 lg:inline-flex" aria-label="สถิติการวิเคราะห์">
+   403→   403→                    <BarChart3 className="h-4 w-4" />
+   404→   404→                  </Button>
+   405→   405→                </SheetTrigger>
+   406→   406→                <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-md">
+   407→   407→                  <SheetHeader>
+   408→   408→                    <SheetTitle className="flex items-center gap-2">
+   409→   409→                      <BarChart3 className="h-4 w-4 text-primary" />
+   410→   410→                      สถิติการวิเคราะห์
+   411→   411→                    </SheetTitle>
+   412→   412→                    <SheetDescription className="sr-only">
+   413→   413→                      สถิติการวิเคราะห์รวมจากประวัติทั้งหมด พร้อมกราฟและการกระจาย
+   414→   414→                    </SheetDescription>
+   415→   415→                  </SheetHeader>
+   416→   416→                  <div className="mt-4 px-1">
+   417→   417→                    <StatsDashboard />
+   418→   418→                  </div>
+   419→   419→                </SheetContent>
+   420→   420→              </Sheet>
+   421→   421→
+   422→   422→              {/* Help button - desktop only (mobile uses overflow menu) */}
+   423→   423→              <div className="hidden lg:block">
+   424→   424→                <HelpButton />
+   425→   425→              </div>
+   426→   426→
+   427→   427→              {/* Keyboard shortcuts help - desktop only */}
+   428→   428→              <div className="hidden lg:block">
+   429→   429→                <ShortcutsHelpButton />
+   430→   430→              </div>
+   431→   431→
+   432→   432→              <ThemeToggle />
+   433→   433→
+   434→   434→              {/* Mobile overflow menu - consolidates secondary buttons */}
+   435→   435→              <MobileOverflowMenu
+   436→   436→                onOpenKnowledge={() => setKnowledgeOpen(true)}
+   437→   437→                onOpenInfo={() => setInfoOpen(true)}
+   438→   438→                onOpenStats={() => setStatsOpen(true)}
+   439→   439→                onOpenHelp={() => window.dispatchEvent(new Event('axiomcore-open-onboarding'))}
+   440→   440→              />
+   441→   441→
+   442→   442→              {messages.length > 0 && (
+   443→   443→                <TooltipProvider delayDuration={300}>
+   444→   444→                  <Tooltip>
+   445→   445→                    <TooltipTrigger asChild>
+   446→   446→                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={clearChat} aria-label="ล้างบทสนทนา">
+   447→   447→                        <Trash2 className="h-4 w-4" />
+   448→   448→                      </Button>
+   449→   449→                    </TooltipTrigger>
+   450→   450→                    <TooltipContent>ล้างบทสนทนา</TooltipContent>
+   451→   451→                  </Tooltip>
+   452→   452→                </TooltipProvider>
+   453→   453→              )}
+   454→   454→            </div>
+   455→   455→          </div>
+   456→   456→        </header>
+   457→   457→
+   458→   458→        {/* Chat area */}
+   459→   459→        <div ref={scrollRef} className="flex-1 overflow-y-auto scrollbar-thin">
+   460→   460→          <div className="mx-auto max-w-4xl px-3 py-6 sm:px-4">
+   461→   461→            {messages.length === 0 ? (
+   462→   462→              <WelcomeView />
+   463→   463→            ) : (
+   464→   464→              <div className="space-y-6">
+   465→   465→                {messages.map((m, i) => {
+   466→   466→                  const isLastAssistant = m.role === 'assistant' && i === messages.length - 1;
+   467→   467→                  return (
+   468→   468→                    <div key={m.id} ref={isLastAssistant ? lastAssistantRef : undefined}>
+   469→   469→                      <ChatMessageView message={m} />
+   470→   470→                    </div>
+   471→   471→                  );
+   472→   472→                })}
+   473→   473→              </div>
+   474→   474→            )}
+   475→   475→          </div>
+   476→   476→        </div>
+   477→   477→
+   478→   478→        {/* Input area - sticky bottom */}
+   479→   479→        <footer className="glass sticky bottom-0 border-t border-border/50">
+   480→   480→          <div className="mx-auto max-w-4xl px-3 py-3 sm:px-4">
+   481→   481→            <form onSubmit={handleSubmit} className="relative">
+   482→   482→              <Textarea
+   483→   483→                ref={textareaRef}
+   484→   484→                value={input}
+   485→   485→                onChange={(e) => setInput(e.target.value)}
+   486→   486→                onKeyDown={handleKeyDown}
+   487→   487→                placeholder=""
+   488→   488→                disabled={analyzing}
+   489→   489→                className="min-h-[52px] resize-none border-border/60 bg-card/60 pr-14 text-sm scrollbar-thin focus-visible:border-primary/50 focus-visible:ring-primary/20"
+   490→   490→                rows={1}
+   491→   491→              />
+   492→   492→              <Button
+   493→   493→                type="submit"
+   494→   494→                size="icon"
+   495→   495→                disabled={!input.trim() || analyzing}
+   496→   496→                className="absolute bottom-2.5 right-2.5 h-8 w-8 rounded-lg"
+   497→   497→                aria-label="ส่งข้อความ"
+   498→   498→              >
+   499→   499→                {analyzing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+   500→   500→              </Button>
+   501→   501→            </form>
+   502→   502→          </div>
+   503→   503→        </footer>
+   504→   504→      </div>
+   505→   505→      <OnboardingOverlay />
+   506→   506→      <CompareView
+   507→   507→        sessionIdA={compareA}
+   508→   508→        sessionIdB={compareB}
+   509→   509→        open={compareOpen}
+   510→   510→        onOpenChange={setCompareOpen}
+   511→   511→      />
+   512→   512→      <KeyboardShortcutsHelp />
+   513→   513→    </div>
+   514→   514→  );
+   515→   515→}
+   516→   516→
+   517→   517→function SidebarContent({
+   518→   518→  activeSessionId,
+   519→   519→  onSelectSession,
+   520→   520→  onNewSession,
+   521→   521→  refreshKey,
+   522→   522→  onCompare,
+   523→   523→  onCollapse,
+   524→   524→  activeTab,
+   525→   525→  setActiveTab,
+   526→   526→}: {
+   527→   527→  activeSessionId: string | null;
+   528→   528→  onSelectSession: (sessionId: string, messages: SessionMessage[]) => void;
+   529→   529→  onNewSession: () => void;
+   530→   530→  refreshKey: number;
+   531→   531→  onCompare?: (sessionIdA: string, sessionIdB: string) => void;
+   532→   532→  onCollapse?: () => void;
+   533→   533→  activeTab: string;
+   534→   534→  setActiveTab: (t: string) => void;
+   535→   535→}) {
+   536→   536→  return (
+   537→   537→    <Tabs value={activeTab} onValueChange={setActiveTab} className="flex h-full flex-col">
+   538→   538→      <div className="mb-3 flex items-center gap-2 px-1">
+   539→   539→        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/15">
+   540→   540→          <PixelMascot size={2} animated={false} border={false} />
+   541→   541→        </div>
+   542→   542→        <span className="text-sm font-semibold">AxiomCore</span>
+   543→   543→        <Button
+   544→   544→          size="sm"
+   545→   545→          variant="outline"
+   546→   546→          onClick={onNewSession}
+   547→   547→          className="ml-auto h-7 gap-1 border-primary/30 bg-primary/5 px-2 text-[11px] hover:bg-primary/10"
+   548→   548→        >
+   549→   549→          <Plus className="h-3 w-3" /> ใหม่
+   550→   550→        </Button>
+   551→   551→        {onCollapse && (
+   552→   552→          <Button
+   553→   553→            variant="ghost"
+   554→   554→            size="icon"
+   555→   555→            className="h-7 w-7 shrink-0"
+   556→   556→            onClick={onCollapse}
+   557→   557→            aria-label="ย่อแถบข้าง"
+   558→   558→          >
+   559→   559→            <PanelLeftClose className="h-4 w-4" />
+   560→   560→          </Button>
+   561→   561→        )}
+   562→   562→      </div>
+   563→   563→      <TabsList className="grid h-9 w-full grid-cols-3 bg-card/40">
+   564→   564→        <TabsTrigger value="history" className="gap-1 text-[11px]">
+   565→   565→          <Brain className="h-3 w-3" /> ประวัติ
+   566→   566→        </TabsTrigger>
+   567→   567→        <TabsTrigger value="knowledge" className="gap-1 text-[11px]">
+   568→   568→          <BookOpen className="h-3 w-3" /> ความรู้
+   569→   569→        </TabsTrigger>
+   570→   570→        <TabsTrigger value="stats" className="gap-1 text-[11px]">
+   571→   571→          <BarChart3 className="h-3 w-3" /> สถิติ
+   572→   572→        </TabsTrigger>
+   573→   573→      </TabsList>
+   574→   574→      <TabsContent value="history" className="mt-3 flex-1 overflow-hidden">
+   575→   575→        <SessionHistory
+   576→   576→          activeSessionId={activeSessionId}
+   577→   577→          onSelectSession={onSelectSession}
+   578→   578→          onNewSession={onNewSession}
+   579→   579→          refreshKey={refreshKey}
+   580→   580→          onCompare={onCompare}
+   581→   581→        />
+   582→   582→      </TabsContent>
+   583→   583→      <TabsContent value="knowledge" className="mt-3 flex-1 overflow-hidden">
+   584→   584→        <KnowledgeBase />
+   585→   585→      </TabsContent>
+   586→   586→      <TabsContent value="stats" className="mt-3 flex-1 overflow-y-auto pr-1">
+   587→   587→        <StatsDashboard />
+   588→   588→      </TabsContent>
+   589→   589→    </Tabs>
+   590→   590→  );
+   591→   591→}
+   592→   592→
+   593→   593→function CollapsedSidebar({
+   594→   594→  activeTab,
+   595→   595→  setActiveTab,
+   596→   596→  onExpand,
+   597→   597→  onNewSession,
+   598→   598→}: {
+   599→   599→  activeTab: string;
+   600→   600→  setActiveTab: (t: string) => void;
+   601→   601→  onExpand: () => void;
+   602→   602→  onNewSession: () => void;
+   603→   603→}) {
+   604→   604→  return (
+   605→   605→    <div className="flex h-full flex-col items-center gap-2 py-3">
+   606→   606→      <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/15">
+   607→   607→        <PixelMascot size={2} animated={false} border={false} />
+   608→   608→      </div>
+   609→   609→      <Button
+   610→   610→        variant="ghost"
+   611→   611→        size="icon"
+   612→   612→        className="h-7 w-7"
+   613→   613→        onClick={onExpand}
+   614→   614→        aria-label="ขยายแถบข้าง"
+   615→   615→        title="ขยายแถบข้าง"
+   616→   616→      >
+   617→   617→        <PanelLeftOpen className="h-4 w-4" />
+   618→   618→      </Button>
+   619→   619→      <div className="my-1 h-px w-8 bg-border/40" />
+   620→   620→      <Button
+   621→   621→        variant="ghost"
+   622→   622→        size="icon"
+   623→   623→        className="h-7 w-7"
+   624→   624→        onClick={onNewSession}
+   625→   625→        aria-label="เริ่ม session ใหม่"
+   626→   626→        title="เริ่ม session ใหม่"
+   627→   627→      >
+   628→   628→        <Plus className="h-4 w-4" />
+   629→   629→      </Button>
+   630→   630→      <div className="my-1 h-px w-8 bg-border/40" />
+   631→   631→      <Button
+   632→   632→        variant={activeTab === 'history' ? 'secondary' : 'ghost'}
+   633→   633→        size="icon"
+   634→   634→        className="h-7 w-7"
+   635→   635→        onClick={() => setActiveTab('history')}
+   636→   636→        aria-label="ประวัติการวิเคราะห์"
+   637→   637→        title="ประวัติการวิเคราะห์"
+   638→   638→      >
+   639→   639→        <Brain className="h-4 w-4" />
+   640→   640→      </Button>
+   641→   641→      <Button
+   642→   642→        variant={activeTab === 'knowledge' ? 'secondary' : 'ghost'}
+   643→   643→        size="icon"
+   644→   644→        className="h-7 w-7"
+   645→   645→        onClick={() => setActiveTab('knowledge')}
+   646→   646→        aria-label="ฐานความรู้"
+   647→   647→        title="ฐานความรู้"
+   648→   648→      >
+   649→   649→        <BookOpen className="h-4 w-4" />
+   650→   650→      </Button>
+   651→   651→      <Button
+   652→   652→        variant={activeTab === 'stats' ? 'secondary' : 'ghost'}
+   653→   653→        size="icon"
+   654→   654→        className="h-7 w-7"
+   655→   655→        onClick={() => setActiveTab('stats')}
+   656→   656→        aria-label="สถิติการวิเคราะห์"
+   657→   657→        title="สถิติการวิเคราะห์"
+   658→   658→      >
+   659→   659→        <BarChart3 className="h-4 w-4" />
+   660→   660→      </Button>
+   661→   661→    </div>
+   662→   662→  );
+   663→   663→}
+   664→   664→
+   665→   665→function WelcomeView() {
+   666→   666→  return (
+   667→   667→    <div className="flex flex-col items-center justify-center py-6 text-center sm:py-12">
+   668→   668→      {/* Main mascot — ลอยอิสระ ไม่มีกรอบสี่เหลี่ยม */}
+   669→   669→      <div className="mb-6">
+   670→   670→        <PixelMascot size={5} animated border />
+   671→   671→      </div>
+   672→   672→      <h2 className="mb-2 text-3xl font-bold tracking-tight sm:text-4xl">
+   673→   673→        <span className="gradient-text">AxiomCore</span>
+   674→   674→      </h2>
+   675→   675→    </div>
+   676→   676→  );
+   677→   677→}
+   678→   678→
+   679→   679→function ChatMessageView({ message }: { message: ChatMessage }) {
+   680→   680→  const isUser = message.role === 'user';
+   681→   681→  return (
+   682→   682→    <div className={cn('flex gap-3 animate-fade-in-up', isUser && 'flex-row-reverse')}>
+   683→   683→      <div
+   684→   684→        className={cn(
+   685→   685→          'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg',
+   686→   686→          isUser ? 'bg-secondary' : 'bg-primary/15',
+   687→   687→        )}
+   688→   688→      >
+   689→   689→        {isUser ? <User className="h-4 w-4 text-muted-foreground" /> : (
+   690→   690→          <PixelMascot size={2} animated={false} border={false} />
+   691→   691→        )}
+   692→   692→      </div>
+   693→   693→      <div className={cn('flex-1 space-y-3', isUser && 'flex flex-col items-end')}>
+   694→   694→        <div className="text-[10px] text-muted-foreground">{isUser ? 'คุณ' : 'AxiomCore'}</div>
+   695→   695→        {isUser ? (
+   696→   696→          <div className="inline-block max-w-[85%] rounded-2xl rounded-tr-sm bg-secondary px-4 py-2.5 text-sm leading-relaxed">
+   697→   697→            {message.content}
+   698→   698→          </div>
+   699→   699→        ) : message.loading ? (
+   700→   700→          <div className="w-full space-y-3">
+   701→   701→            <div className="flex items-center gap-2 rounded-2xl rounded-tl-sm bg-card/60 px-4 py-2.5 text-sm text-muted-foreground">
+   702→   702→              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+   703→   703→              <span className="animate-pulse-soft">กำลังวิเคราะห์...</span>
+   704→   704→            </div>
+   705→   705→            <AnalysisSkeleton />
+   706→   706→          </div>
+   707→   707→        ) : message.error ? (
+   708→   708→          <div className="rounded-2xl rounded-tl-sm border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+   709→   709→            {message.error}
+   710→   710→          </div>
+   711→   711→        ) : message.result ? (
+   712→   712→          <div className="w-full">
+   713→   713→            <AnalysisResultView result={message.result} />
+   714→   714→          </div>
+   715→   715→        ) : (
+   716→   716→          <div className="inline-block rounded-2xl rounded-tl-sm bg-card/60 px-4 py-2.5 text-sm">
+   717→   717→            {message.content}
+   718→   718→          </div>
+   719→   719→        )}
+   720→   720→      </div>
+   721→   721→    </div>
+   722→   722→  );
+   723→   723→}
+   724→   724→

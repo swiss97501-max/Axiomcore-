@@ -1,0 +1,854 @@
+     1→'use client';
+     2→
+     3→import { useEffect, useState } from 'react';
+     4→import { Card } from '@/components/ui/card';
+     5→import { Badge } from '@/components/ui/badge';
+     6→import { Separator } from '@/components/ui/separator';
+     7→import {
+     8→  Activity,
+     9→  AlertTriangle,
+    10→  TrendingUp,
+    11→  BarChart3,
+    12→  Clock,
+    13→  Database,
+    14→  Brain,
+    15→  Loader2,
+    16→  Calendar,
+    17→  Lightbulb,
+    18→  Inbox,
+    19→  CheckCircle2,
+    20→  AlertCircle,
+    21→  Layers,
+    22→} from 'lucide-react';
+    23→import type { FallacyType } from '@/lib/engine/types';
+    24→import { FALLACY_META, ALL_FALLACY_TYPES } from '@/lib/engine/types';
+    25→import { cn } from '@/lib/core';
+    26→
+    27→interface Stats {
+    28→  totalAnalyses: number;
+    29→  totalFallacies: number;
+    30→  totalSentences: number;
+    31→  avgConfidence: number;
+    32→  avgFallaciesPerAnalysis: number;
+    33→  recentCount: number;
+    34→  typeFrequency: Record<string, number>;
+    35→  confidenceBuckets: { low: number; medium: number; high: number; veryHigh: number };
+    36→  fallaciesPerAnalysis: { '0': number; '1': number; '2': number; '3+': number };
+    37→  recentByDay: { date: string; count: number }[];
+    38→  topFallacies: { type: FallacyType; nameTh: string; nameEn: string; count: number }[];
+    39→}
+    40→
+    41→const FALLACY_COLORS: Record<string, string> = {
+    42→  ad_hominem: 'bg-rose-500/20 text-rose-400 border-rose-500/30',
+    43→  straw_man: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+    44→  red_herring: 'bg-amber-500/20 text-amber-400 border-amber-500/30',
+    45→  false_dilemma: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+    46→  hasty_generalization: 'bg-lime-500/20 text-lime-400 border-lime-500/30',
+    47→  false_cause: 'bg-green-500/20 text-green-400 border-green-500/30',
+    48→  appeal_to_authority: 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+    49→  appeal_to_popularity: 'bg-teal-500/20 text-teal-400 border-teal-500/30',
+    50→  slippery_slope: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
+    51→  circular_reasoning: 'bg-sky-500/20 text-sky-400 border-sky-500/30',
+    52→  cherry_picking: 'bg-indigo-500/20 text-indigo-400 border-indigo-500/30',
+    53→  burden_of_proof: 'bg-violet-500/20 text-violet-400 border-violet-500/30',
+    54→};
+    55→
+    56→// ===== donut-chart.tsx =====
+    57→interface DonutChartProps {
+    58→  data: { label: string; value: number; color: string }[];
+    59→  size?: number;
+    60→  thickness?: number;
+    61→  centerLabel?: string;
+    62→  centerValue?: string;
+    63→}
+    64→
+    65→const FALLACY_CHART_COLORS = [
+    66→  '#fb7185', // rose-400
+    67→  '#fb923c', // orange-400
+    68→  '#fbbf24', // amber-400
+    69→  '#facc15', // yellow-400
+    70→  '#a3e635', // lime-400
+    71→  '#4ade80', // green-400
+    72→  '#34d399', // emerald-400
+    73→  '#2dd4bf', // teal-400
+    74→  '#22d3ee', // cyan-400
+    75→  '#38bdf8', // sky-400
+    76→  '#818cf8', // indigo-400
+    77→  '#a78bfa', // violet-400
+    78→];
+    79→
+    80→export function DonutChart({
+    81→  data,
+    82→  size = 140,
+    83→  thickness = 18,
+    84→  centerLabel,
+    85→  centerValue,
+    86→}: DonutChartProps) {
+    87→  const total = data.reduce((sum, d) => sum + d.value, 0);
+    88→  const radius = (size - thickness) / 2;
+    89→  const circumference = 2 * Math.PI * radius;
+    90→  const center = size / 2;
+    91→
+    92→  if (total === 0 || data.length === 0) {
+    93→    return (
+    94→      <div
+    95→        className="flex items-center justify-center rounded-full border-2 border-dashed border-border/40 text-[10px] text-muted-foreground"
+    96→        style={{ width: size, height: size }}
+    97→      >
+    98→        ไม่มีข้อมูล
+    99→      </div>
+   100→    );
+   101→  }
+   102→
+   103→  // คำนวณ segments ด้วย reduce เพื่อหลีกเลี่ยง mutation ใน render
+   104→  const { segments } = data.reduce(
+   105→    (acc, d, i) => {
+   106→      const fraction = d.value / total;
+   107→      const dashLength = fraction * circumference;
+   108→      const segment = {
+   109→        key: i,
+   110→        color: d.color || FALLACY_CHART_COLORS[i % FALLACY_CHART_COLORS.length],
+   111→        dashLength,
+   112→        dashGap: circumference - dashLength,
+   113→        offset: -acc.runningOffset,
+   114→        label: d.label,
+   115→        value: d.value,
+   116→        pct: Math.round(fraction * 100),
+   117→      };
+   118→      return { segments: [...acc.segments, segment], runningOffset: acc.runningOffset + dashLength };
+   119→    },
+   120→    { segments: [] as Array<Record<string, unknown>>, runningOffset: 0 },
+   121→  );
+   122→
+   123→  return (
+   124→    <div className="flex items-center gap-3">
+   125→      <div className="relative shrink-0" style={{ width: size, height: size }}>
+   126→        <svg width={size} height={size} className="-rotate-90">
+   127→          {/* Background circle */}
+   128→          <circle
+   129→            cx={center}
+   130→            cy={center}
+   131→            r={radius}
+   132→            fill="none"
+   133→            stroke="currentColor"
+   134→            strokeWidth={thickness}
+   135→            className="text-border/30"
+   136→          />
+   137→          {/* Segments */}
+   138→          {segments.map((s) => (
+   139→            <circle
+   140→              key={s.key}
+   141→              cx={center}
+   142→              cy={center}
+   143→              r={radius}
+   144→              fill="none"
+   145→              stroke={s.color}
+   146→              strokeWidth={thickness}
+   147→              strokeDasharray={`${s.dashLength} ${s.dashGap}`}
+   148→              strokeDashoffset={s.offset}
+   149→              strokeLinecap="butt"
+   150→              style={{ transition: 'stroke-dasharray 0.6s ease-out, stroke-dashoffset 0.6s ease-out' }}
+   151→            >
+   152→              <title>{`${s.label}: ${s.value} (${s.pct}%)`}</title>
+   153→            </circle>
+   154→          ))}
+   155→        </svg>
+   156→        {/* Center label */}
+   157→        <div className="absolute inset-0 flex flex-col items-center justify-center">
+   158→          {centerValue && (
+   159→            <span className="text-lg font-semibold leading-none text-foreground">
+   160→              {centerValue}
+   161→            </span>
+   162→          )}
+   163→          {centerLabel && (
+   164→            <span className="mt-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">
+   165→              {centerLabel}
+   166→            </span>
+   167→          )}
+   168→        </div>
+   169→      </div>
+   170→      {/* Legend */}
+   171→      <div className="flex-1 space-y-1">
+   172→        {segments.map((s) => (
+   173→          <div key={s.key} className="flex items-center gap-1.5 text-[10px]">
+   174→            <span
+   175→              className="h-2 w-2 shrink-0 rounded-full"
+   176→              style={{ background: s.color }}
+   177→            />
+   178→            <span className="flex-1 truncate text-muted-foreground">{s.label}</span>
+   179→            <span className="font-medium text-foreground">{s.value}</span>
+   180→            <span className="text-muted-foreground/60">({s.pct}%)</span>
+   181→          </div>
+   182→        ))}
+   183→      </div>
+   184→    </div>
+   185→  );
+   186→}
+   187→
+   188→export { FALLACY_CHART_COLORS };
+   189→
+   190→
+   191→// ===== analysis-timeline.tsx =====
+   192→interface TimelineItem {
+   193→  id: string;
+   194→  title: string;
+   195→  createdAt: string;
+   196→  fallacyCount: number;
+   197→  topFallacy?: FallacyType;
+   198→  confidence: number;
+   199→}
+   200→
+   201→interface TimelineData {
+   202→  items: TimelineItem[];
+   203→  total: number;
+   204→}
+   205→
+   206→
+   207→const FALLACY_TEXT_COLORS: Record<string, string> = {
+   208→  ad_hominem: 'text-rose-400',
+   209→  straw_man: 'text-orange-400',
+   210→  red_herring: 'text-amber-400',
+   211→  false_dilemma: 'text-yellow-400',
+   212→  hasty_generalization: 'text-lime-400',
+   213→  false_cause: 'text-green-400',
+   214→  appeal_to_authority: 'text-emerald-400',
+   215→  appeal_to_popularity: 'text-teal-400',
+   216→  slippery_slope: 'text-cyan-400',
+   217→  circular_reasoning: 'text-sky-400',
+   218→  cherry_picking: 'text-indigo-400',
+   219→  burden_of_proof: 'text-violet-400',
+   220→};
+   221→
+   222→export function AnalysisTimeline() {
+   223→  const [data, setData] = useState<TimelineData | null>(null);
+   224→  const [loading, setLoading] = useState(true);
+   225→
+   226→  useEffect(() => {
+   227→    let cancelled = false;
+   228→    (async () => {
+   229→      try {
+   230→        const res = await fetch('/api/timeline');
+   231→        const d = await res.json();
+   232→        if (!cancelled && d.ok) setData(d);
+   233→      } finally {
+   234→        if (!cancelled) setLoading(false);
+   235→      }
+   236→    })();
+   237→    return () => {
+   238→      cancelled = true;
+   239→    };
+   240→  }, []);
+   241→
+   242→  if (loading) {
+   243→    return (
+   244→      <div className="flex items-center justify-center py-6 text-muted-foreground">
+   245→        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> กำลังโหลด...
+   246→      </div>
+   247→    );
+   248→  }
+   249→
+   250→  if (!data || data.items.length === 0) {
+   251→    return null;
+   252→  }
+   253→
+   254→  // Group by date
+   255→  const byDate = new Map<string, TimelineItem[]>();
+   256→  for (const item of data.items) {
+   257→    const dateStr = new Date(item.createdAt).toLocaleDateString('th-TH', {
+   258→      day: 'numeric',
+   259→      month: 'short',
+   260→      year: 'numeric',
+   261→    });
+   262→    if (!byDate.has(dateStr)) byDate.set(dateStr, []);
+   263→    byDate.get(dateStr)!.push(item);
+   264→  }
+   265→
+   266→  const maxConfidence = Math.max(...data.items.map((i) => i.confidence), 1);
+   267→
+   268→  return (
+   269→    <Card className="p-3">
+   270→      <div className="mb-2 flex items-center gap-2">
+   271→        <Clock className="h-3.5 w-3.5 text-primary" />
+   272→        <h4 className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+   273→          ไทม์ไลน์การวิเคราะห์
+   274→        </h4>
+   275→        <Badge variant="outline" className="ml-auto border-white/10 bg-white/5 text-[9px]">
+   276→          {data.total} ล่าสุด
+   277→        </Badge>
+   278→      </div>
+   279→
+   280→      <div className="space-y-3">
+   281→        {[...byDate.entries()].map(([date, items]) => (
+   282→          <div key={date}>
+   283→            <div className="mb-1.5 flex items-center gap-1.5">
+   284→              <Calendar className="h-2.5 w-2.5 text-muted-foreground" />
+   285→              <span className="text-[9px] font-medium text-muted-foreground">{date}</span>
+   286→              <span className="text-[8px] text-muted-foreground/60">· {items.length} ครั้ง</span>
+   287→            </div>
+   288→            <div className="relative space-y-1.5 border-l border-border/40 pl-3">
+   289→              {items.map((item) => {
+   290→                const time = new Date(item.createdAt).toLocaleTimeString('th-TH', {
+   291→                  hour: '2-digit',
+   292→                  minute: '2-digit',
+   293→                });
+   294→                const confPct = Math.round(item.confidence * 100);
+   295→                const barWidth = (item.confidence / maxConfidence) * 100;
+   296→                return (
+   297→                  <div key={item.id} className="relative">
+   298→                    {/* Timeline dot */}
+   299→                    <div
+   300→                      className={cn(
+   301→                        'absolute -left-[15px] top-1.5 h-2 w-2 rounded-full ring-2 ring-background',
+   302→                        item.topFallacy ? FALLACY_COLORS[item.topFallacy] : 'bg-muted-foreground/40',
+   303→                      )}
+   304→                    />
+   305→                    <div className="rounded-md bg-card/40 p-1.5">
+   306→                      <div className="mb-0.5 flex items-center gap-1.5">
+   307→                        <span className="text-[9px] text-muted-foreground">{time}</span>
+   308→                        {item.fallacyCount > 0 ? (
+   309→                          <Badge variant="outline" className="border-rose-500/30 bg-rose-500/10 text-[8px] text-rose-400">
+   310→                            {item.fallacyCount} วิบัติ
+   311→                          </Badge>
+   312→                        ) : (
+   313→                          <Badge variant="outline" className="border-emerald-500/30 bg-emerald-500/10 text-[8px] text-emerald-400">
+   314→                            ปกติ
+   315→                          </Badge>
+   316→                        )}
+   317→                        <span className="ml-auto text-[9px] font-medium text-primary">{confPct}%</span>
+   318→                      </div>
+   319→                      <p className="line-clamp-1 text-[10px] text-muted-foreground">{item.title}</p>
+   320→                      {item.topFallacy && (
+   321→                        <div className="mt-0.5 flex items-center gap-1">
+   322→                          <span className={cn('text-[8px] font-medium', FALLACY_TEXT_COLORS[item.topFallacy])}>
+   323→                            {FALLACY_META[item.topFallacy].nameTh}
+   324→                          </span>
+   325→                          <div className="flex-1 h-0.5 overflow-hidden rounded-full bg-card/60">
+   326→                            <div
+   327→                              className={cn('h-full rounded-full', FALLACY_COLORS[item.topFallacy])}
+   328→                              style={{ width: `${barWidth}%` }}
+   329→                            />
+   330→                          </div>
+   331→                        </div>
+   332→                      )}
+   333→                    </div>
+   334→                  </div>
+   335→                );
+   336→              })}
+   337→            </div>
+   338→          </div>
+   339→        ))}
+   340→      </div>
+   341→    </Card>
+   342→  );
+   343→}
+   344→
+   345→
+   346→// ===== analysis-insights.tsx =====
+   347→interface Insight {
+   348→  type: string;
+   349→  title: string;
+   350→  description: string;
+   351→  icon: string;
+   352→  severity?: string;
+   353→}
+   354→
+   355→interface InsightsData {
+   356→  insights: Insight[];
+   357→  summary: {
+   358→    totalAnalyses: number;
+   359→    totalFallacies: number;
+   360→    avgConfidence: number;
+   361→    cleanRate: number;
+   362→    topFallacy?: string;
+   363→  };
+   364→}
+   365→
+   366→const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
+   367→  AlertTriangle,
+   368→  CheckCircle2,
+   369→  AlertCircle,
+   370→  TrendingUp,
+   371→  Layers,
+   372→};
+   373→
+   374→const SEVERITY_STYLES: Record<string, { border: string; bg: string; icon: string }> = {
+   375→  high: {
+   376→    border: 'border-rose-500/30',
+   377→    bg: 'bg-rose-500/5',
+   378→    icon: 'text-rose-400',
+   379→  },
+   380→  medium: {
+   381→    border: 'border-amber-500/30',
+   382→    bg: 'bg-amber-500/5',
+   383→    icon: 'text-amber-400',
+   384→  },
+   385→  low: {
+   386→    border: 'border-emerald-500/30',
+   387→    bg: 'bg-emerald-500/5',
+   388→    icon: 'text-emerald-400',
+   389→  },
+   390→};
+   391→
+   392→export function AnalysisInsights() {
+   393→  const [data, setData] = useState<InsightsData | null>(null);
+   394→  const [loading, setLoading] = useState(true);
+   395→
+   396→  useEffect(() => {
+   397→    let cancelled = false;
+   398→    (async () => {
+   399→      try {
+   400→        const res = await fetch('/api/insights');
+   401→        const d = await res.json();
+   402→        if (!cancelled && d.ok) setData(d);
+   403→      } finally {
+   404→        if (!cancelled) setLoading(false);
+   405→      }
+   406→    })();
+   407→    return () => {
+   408→      cancelled = true;
+   409→    };
+   410→  }, []);
+   411→
+   412→  if (loading) {
+   413→    return (
+   414→      <div className="flex items-center justify-center py-6 text-muted-foreground">
+   415→        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> กำลังวิเคราะห์...
+   416→      </div>
+   417→    );
+   418→  }
+   419→
+   420→  if (!data || data.insights.length === 0) {
+   421→    return null;
+   422→  }
+   423→
+   424→  return (
+   425→    <Card className="border-primary/20 bg-gradient-to-br from-primary/5 to-transparent p-3">
+   426→      <div className="mb-2 flex items-center gap-2">
+   427→        <Lightbulb className="h-3.5 w-3.5 text-primary" />
+   428→        <h4 className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+   429→           Insight จากการวิเคราะห์
+   430→        </h4>
+   431→        <Badge variant="outline" className="ml-auto border-primary/30 bg-primary/10 text-[9px] text-primary">
+   432→          {data.insights.length} ข้อ
+   433→        </Badge>
+   434→      </div>
+   435→
+   436→      <div className="space-y-2">
+   437→        {data.insights.map((insight, i) => {
+   438→          const Icon = ICON_MAP[insight.icon] ?? Lightbulb;
+   439→          const style = SEVERITY_STYLES[insight.severity ?? 'low'] ?? SEVERITY_STYLES.low;
+   440→          return (
+   441→            <div
+   442→              key={i}
+   443→              className={cn('flex items-start gap-2 rounded-md border p-2', style.border, style.bg)}
+   444→            >
+   445→              <Icon className={cn('mt-0.5 h-3.5 w-3.5 shrink-0', style.icon)} />
+   446→              <div className="min-w-0 flex-1">
+   447→                <div className="text-[11px] font-medium text-foreground">{insight.title}</div>
+   448→                <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">
+   449→                  {insight.description}
+   450→                </p>
+   451→              </div>
+   452→            </div>
+   453→          );
+   454→        })}
+   455→      </div>
+   456→    </Card>
+   457→  );
+   458→}
+   459→
+   460→
+   461→// ===== self-improvement-stats.tsx =====
+   462→
+   463→interface LatestResult {
+   464→  iteration: number;
+   465→  f1Score: number;
+   466→  precision: number;
+   467→  recall: number;
+   468→  truePositive: number;
+   469→  falsePositive: number;
+   470→  falseNegative: number;
+   471→  trueNegative: number;
+   472→  totalTested: number;
+   473→  rulesAdjusted: number;
+   474→  notes: string;
+   475→  createdAt: string;
+   476→}
+   477→
+   478→interface HistoryItem {
+   479→  iteration: number;
+   480→  f1Score: number;
+   481→  precision: number;
+   482→  recall: number;
+   483→  totalTested: number;
+   484→  rulesAdjusted: number;
+   485→}
+   486→
+   487→export function SelfImprovementStats() {
+   488→  const [latest, setLatest] = useState<LatestResult | null>(null);
+   489→  const [history, setHistory] = useState<HistoryItem[]>([]);
+   490→  const [hasData, setHasData] = useState(false);
+   491→  const [loading, setLoading] = useState(true);
+   492→
+   493→  useEffect(() => {
+   494→    let cancelled = false;
+   495→    (async () => {
+   496→      try {
+   497→        const res = await fetch('/api/self-improvement/latest');
+   498→        const data = await res.json();
+   499→        if (!cancelled) {
+   500→          setHasData(data.hasData);
+   501→          if (data.hasData) {
+   502→            setLatest(data.latest);
+   503→            setHistory(data.history);
+   504→          }
+   505→        }
+   506→      } finally {
+   507→        if (!cancelled) setLoading(false);
+   508→      }
+   509→    })();
+   510→    return () => {
+   511→      cancelled = true;
+   512→    };
+   513→  }, []);
+   514→
+   515→  if (loading) {
+   516→    return (
+   517→      <div className="flex items-center justify-center py-6 text-muted-foreground">
+   518→        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> กำลังโหลด...
+   519→      </div>
+   520→    );
+   521→  }
+   522→
+   523→  if (!hasData) {
+   524→    return (
+   525→      <Card className="border-violet-500/20 bg-violet-500/5 p-3">
+   526→        <div className="flex items-center gap-2">
+   527→          <Brain className="h-4 w-4 text-violet-400" />
+   528→          <h4 className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+   529→            Self-Improvement Loop
+   530→          </h4>
+   531→        </div>
+   532→        <p className="mt-2 text-xs text-muted-foreground">
+   533→          ยังไม่มีข้อมูล — รัน self-improvement จากแผงข้อมูลระบบเพื่อปรับปรุงกฎ
+   534→        </p>
+   535→      </Card>
+   536→    );
+   537→  }
+   538→
+   539→  if (!latest) return null;
+   540→
+   541→  const f1Pct = Math.round(latest.f1Score * 100);
+   542→  const precisionPct = Math.round(latest.precision * 100);
+   543→  const recallPct = Math.round(latest.recall * 100);
+   544→
+   545→  return (
+   546→    <Card className="border-violet-500/20 bg-violet-500/5 p-3">
+   547→      <div className="mb-2 flex items-center gap-2">
+   548→        <Brain className="h-4 w-4 text-violet-400" />
+   549→        <h4 className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+   550→          Self-Improvement Loop
+   551→        </h4>
+   552→        <Badge variant="outline" className="ml-auto border-violet-500/30 bg-violet-500/10 text-[9px] text-violet-400">
+   553→          รอบที่ {latest.iteration}
+   554→        </Badge>
+   555→      </div>
+   556→
+   557→      {/* F1 / Precision / Recall */}
+   558→      <div className="grid grid-cols-3 gap-2">
+   559→        <MetricBox label="F1" value={f1Pct} color="text-violet-400" />
+   560→        <MetricBox label="Precision" value={precisionPct} color="text-emerald-400" />
+   561→        <MetricBox label="Recall" value={recallPct} color="text-cyan-400" />
+   562→      </div>
+   563→
+   564→      {/* Confusion matrix */}
+   565→      <div className="mt-2 grid grid-cols-4 gap-1.5">
+   566→        <ConfusionBox label="TP" value={latest.truePositive} color="text-emerald-400" />
+   567→        <ConfusionBox label="FP" value={latest.falsePositive} color="text-rose-400" />
+   568→        <ConfusionBox label="FN" value={latest.falseNegative} color="text-amber-400" />
+   569→        <ConfusionBox label="TN" value={latest.trueNegative} color="text-muted-foreground" />
+   570→      </div>
+   571→
+   572→      {/* Notes */}
+   573→      <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+   574→        {latest.notes}
+   575→      </p>
+   576→
+   577→      {/* History chart */}
+   578→      {history.length > 1 && (
+   579→        <>
+   580→          <Separator className="my-2 bg-white/5" />
+   581→          <h5 className="mb-1.5 text-[9px] font-semibold uppercase tracking-wide text-muted-foreground">
+   582→            ประวัติ F1 Score
+   583→          </h5>
+   584→          <div className="flex h-12 items-end justify-between gap-1">
+   585→            {history.map((h) => {
+   586→              const height = Math.max(4, h.f1Score * 100);
+   587→              return (
+   588→                <div key={h.iteration} className="flex flex-1 flex-col items-center gap-0.5">
+   589→                  <div className="flex w-full flex-1 items-end">
+   590→                    <div
+   591→                      className="w-full rounded-t bg-violet-500/60 transition-all hover:bg-violet-500/80"
+   592→                      style={{ height: `${height}%`, minHeight: '2px' }}
+   593→                      title={`รอบ ${h.iteration}: F1=${Math.round(h.f1Score * 100)}%`}
+   594→                    />
+   595→                  </div>
+   596→                  <span className="text-[8px] text-muted-foreground">{h.iteration}</span>
+   597→                </div>
+   598→              );
+   599→            })}
+   600→          </div>
+   601→        </>
+   602→      )}
+   603→    </Card>
+   604→  );
+   605→}
+   606→
+   607→function MetricBox({ label, value, color }: { label: string; value: number; color: string }) {
+   608→  return (
+   609→    <div className="rounded-md bg-card/40 p-1.5 text-center">
+   610→      <div className={cn('text-base font-semibold', color)}>{value}%</div>
+   611→      <div className="text-[8px] text-muted-foreground">{label}</div>
+   612→    </div>
+   613→  );
+   614→}
+   615→
+   616→function ConfusionBox({ label, value, color }: { label: string; value: number; color: string }) {
+   617→  return (
+   618→    <div className="rounded-md bg-card/40 p-1.5 text-center">
+   619→      <div className={cn('text-sm font-semibold', color)}>{value}</div>
+   620→      <div className="text-[8px] text-muted-foreground">{label}</div>
+   621→    </div>
+   622→  );
+   623→}
+   624→
+   625→
+   626→
+   627→export function StatsDashboard() {
+   628→  const [stats, setStats] = useState<Stats | null>(null);
+   629→  const [loading, setLoading] = useState(true);
+   630→
+   631→  useEffect(() => {
+   632→    let cancelled = false;
+   633→    (async () => {
+   634→      try {
+   635→        const res = await fetch('/api/stats');
+   636→        const data = await res.json();
+   637→        if (!cancelled && data.ok) setStats(data.stats);
+   638→      } finally {
+   639→        if (!cancelled) setLoading(false);
+   640→      }
+   641→    })();
+   642→    return () => {
+   643→      cancelled = true;
+   644→    };
+   645→  }, []);
+   646→
+   647→  if (loading) {
+   648→    return (
+   649→      <div className="flex items-center justify-center py-12 text-muted-foreground">
+   650→        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> กำลังโหลดสถิติ...
+   651→      </div>
+   652→    );
+   653→  }
+   654→
+   655→  if (!stats || stats.totalAnalyses === 0) {
+   656→    return (
+   657→      <div className="flex flex-col items-center justify-center py-10 text-center text-muted-foreground">
+   658→        <Inbox className="mb-2 h-10 w-10 opacity-30" />
+   659→        <p className="text-sm font-medium">ยังไม่มีข้อมูลสถิติ</p>
+   660→        <p className="mt-1 text-xs">ทำการวิเคราะห์ข้อความเพื่อเริ่มสะสมสถิติ</p>
+   661→      </div>
+   662→    );
+   663→  }
+   664→
+   665→  const maxDayCount = Math.max(...stats.recentByDay.map((d) => d.count), 1);
+   666→  const maxFallacyCount = stats.topFallacies[0]?.count ?? 1;
+   667→
+   668→  return (
+   669→    <div className="space-y-3">
+   670→      <div className="flex items-center gap-2">
+   671→        <BarChart3 className="h-4 w-4 text-primary" />
+   672→        <h3 className="text-sm font-semibold">สถิติการวิเคราะห์</h3>
+   673→      </div>
+   674→
+   675→      {/* Overview stats */}
+   676→      <Card className="p-3">
+   677→        <div className="grid grid-cols-2 gap-2">
+   678→          <StatBox icon={Activity} label="การวิเคราะห์ทั้งหมด" value={stats.totalAnalyses} color="text-primary" />
+   679→          <StatBox icon={AlertTriangle} label="ตรรกะวิบัติที่พบ" value={stats.totalFallacies} color="text-rose-400" />
+   680→          <StatBox icon={Layers} label="ประโยคที่วิเคราะห์" value={stats.totalSentences} color="text-cyan-400" />
+   681→          <StatBox icon={Clock} label="7 วันล่าสุด" value={stats.recentCount} color="text-amber-400" />
+   682→        </div>
+   683→      </Card>
+   684→
+   685→      {/* Avg confidence */}
+   686→      <Card className="p-3">
+   687→        <div className="mb-1.5 flex items-center justify-between">
+   688→          <span className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+   689→            <TrendingUp className="h-3 w-3" /> ความมั่นใจเฉลี่ย
+   690→          </span>
+   691→          <span className="text-sm font-semibold text-primary">
+   692→            {Math.round(stats.avgConfidence * 100)}%
+   693→          </span>
+   694→        </div>
+   695→        <div className="flex h-2 overflow-hidden rounded-full bg-card/40">
+   696→          <div className="bg-primary/70" style={{ width: `${stats.avgConfidence * 100}%` }} />
+   697→        </div>
+   698→        <div className="mt-2 text-[10px] text-muted-foreground">
+   699→          พบเฉลี่ย {stats.avgFallaciesPerAnalysis} ตรรกะวิบัติต่อการวิเคราะห์
+   700→        </div>
+   701→      </Card>
+   702→
+   703→      {/* 7-day activity chart */}
+   704→      <Card className="p-3">
+   705→        <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+   706→          กิจกรรม 7 วันล่าสุด
+   707→        </h4>
+   708→        <div className="flex h-20 items-end justify-between gap-1">
+   709→          {stats.recentByDay.map((d) => {
+   710→            const height = d.count > 0 ? (d.count / maxDayCount) * 100 : 4;
+   711→            const dayLabel = new Date(d.date).toLocaleDateString('th-TH', { weekday: 'short' });
+   712→            return (
+   713→              <div key={d.date} className="flex flex-1 flex-col items-center gap-1">
+   714→                <div className="flex w-full flex-1 items-end">
+   715→                  <div
+   716→                    className={cn(
+   717→                      'w-full rounded-t transition-all',
+   718→                      d.count > 0 ? 'bg-primary/60 hover:bg-primary/80' : 'bg-white/5',
+   719→                    )}
+   720→                    style={{ height: `${height}%`, minHeight: '2px' }}
+   721→                    title={`${d.date}: ${d.count} ครั้ง`}
+   722→                  />
+   723→                </div>
+   724→                <span className="text-[8px] text-muted-foreground">{dayLabel}</span>
+   725→              </div>
+   726→            );
+   727→          })}
+   728→        </div>
+   729→      </Card>
+   730→
+   731→      {/* Top fallacies with donut chart */}
+   732→      {stats.topFallacies.length > 0 && (
+   733→        <Card className="p-3">
+   734→          <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+   735→            สัดส่วนตรรกะวิบัติ
+   736→          </h4>
+   737→          <DonutChart
+   738→            data={stats.topFallacies.map((f, i) => ({
+   739→              label: f.nameTh,
+   740→              value: f.count,
+   741→              color: FALLACY_CHART_COLORS[ALL_FALLACY_TYPES.indexOf(f.type) % FALLACY_CHART_COLORS.length],
+   742→            }))}
+   743→            size={130}
+   744→            thickness={16}
+   745→            centerValue={String(stats.totalFallacies)}
+   746→            centerLabel="ทั้งหมด"
+   747→          />
+   748→          <h4 className="mb-2 mt-3 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+   749→            อันดับความถี่
+   750→          </h4>
+   751→          <div className="space-y-1.5">
+   752→            {stats.topFallacies.slice(0, 8).map((f, i) => {
+   753→              const colorClass = FALLACY_COLORS[f.type] ?? 'bg-white/5 text-foreground border-white/10';
+   754→              const pct = (f.count / maxFallacyCount) * 100;
+   755→              return (
+   756→                <div key={f.type} className="flex items-center gap-2">
+   757→                  <span className="w-4 text-[10px] text-muted-foreground">{i + 1}</span>
+   758→                  <div className="flex-1 min-w-0">
+   759→                    <div className="mb-0.5 flex items-center justify-between gap-1">
+   760→                      <span className="truncate text-[11px] font-medium text-foreground">{f.nameTh}</span>
+   761→                      <span className="text-[10px] text-muted-foreground">{f.count}</span>
+   762→                    </div>
+   763→                    <div className="h-1.5 overflow-hidden rounded-full bg-card/40">
+   764→                      <div
+   765→                        className={cn('h-full rounded-full', colorClass.split(' ')[0].replace('/20', '/60'))}
+   766→                        style={{ width: `${pct}%` }}
+   767→                      />
+   768→                    </div>
+   769→                  </div>
+   770→                </div>
+   771→              );
+   772→            })}
+   773→          </div>
+   774→        </Card>
+   775→      )}
+   776→
+   777→      {/* Distribution */}
+   778→      <Card className="p-3">
+   779→        <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+   780→          การกระจายตามจำนวนตรรกะวิบัติ
+   781→        </h4>
+   782→        <div className="grid grid-cols-4 gap-1.5">
+   783→          {[
+   784→            { label: '0', value: stats.fallaciesPerAnalysis['0'], color: 'text-emerald-400' },
+   785→            { label: '1', value: stats.fallaciesPerAnalysis['1'], color: 'text-amber-400' },
+   786→            { label: '2', value: stats.fallaciesPerAnalysis['2'], color: 'text-orange-400' },
+   787→            { label: '3+', value: stats.fallaciesPerAnalysis['3+'], color: 'text-rose-400' },
+   788→          ].map((b) => (
+   789→            <div key={b.label} className="rounded-md bg-card/40 p-2 text-center">
+   790→              <div className={cn('text-lg font-semibold', b.color)}>{b.value}</div>
+   791→              <div className="text-[9px] text-muted-foreground">{b.label} วิบัติ</div>
+   792→            </div>
+   793→          ))}
+   794→        </div>
+   795→      </Card>
+   796→
+   797→      {/* Confidence distribution donut */}
+   798→      {stats.totalFallacies > 0 && (
+   799→        <Card className="p-3">
+   800→          <h4 className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+   801→            การกระจายระดับความมั่นใจ
+   802→          </h4>
+   803→          <DonutChart
+   804→            data={[
+   805→              { label: 'ต่ำ (<35%)', value: stats.confidenceBuckets.low, color: '#fb7185' },
+   806→              { label: 'ปานกลาง (35-55%)', value: stats.confidenceBuckets.medium, color: '#fbbf24' },
+   807→              { label: 'สูง (55-75%)', value: stats.confidenceBuckets.high, color: '#a3e635' },
+   808→              { label: 'สูงมาก (≥75%)', value: stats.confidenceBuckets.veryHigh, color: '#34d399' },
+   809→            ]}
+   810→            size={130}
+   811→            thickness={16}
+   812→            centerValue={String(stats.totalFallacies)}
+   813→            centerLabel="ตรวจพบ"
+   814→          />
+   815→        </Card>
+   816→      )}
+   817→
+   818→      {/* Self-Improvement Loop results */}
+   819→      <SelfImprovementStats />
+   820→
+   821→      {/* Analysis timeline */}
+   822→      <AnalysisTimeline />
+   823→
+   824→      {/* Analysis insights */}
+   825→      <AnalysisInsights />
+   826→
+   827→      <Separator className="bg-white/5" />
+   828→      <p className="text-center text-[9px] text-muted-foreground">
+   829→        นับจาก {stats.totalAnalyses} การวิเคราะห์ล่าสุด
+   830→      </p>
+   831→    </div>
+   832→  );
+   833→}
+   834→
+   835→function StatBox({
+   836→  icon: Icon,
+   837→  label,
+   838→  value,
+   839→  color,
+   840→}: {
+   841→  icon: React.ComponentType<{ className?: string }>;
+   842→  label: string;
+   843→  value: number;
+   844→  color: string;
+   845→}) {
+   846→  return (
+   847→    <div className="rounded-lg border border-border/40 bg-card/40 p-2.5">
+   848→      <Icon className={cn('mb-1 h-3.5 w-3.5', color)} />
+   849→      <div className={cn('text-xl font-semibold', color)}>{value.toLocaleString()}</div>
+   850→      <div className="text-[9px] text-muted-foreground">{label}</div>
+   851→    </div>
+   852→  );
+   853→}
+   854→

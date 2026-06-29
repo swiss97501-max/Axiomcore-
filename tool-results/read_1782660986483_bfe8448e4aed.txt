@@ -1,0 +1,779 @@
+     1→// AxiomCore Engine - Deep Structural Analyzer
+     2→// วิเคราะห์โครงสร้างเชิงลึก: attack target, evidence selection, topic shift, causal chain,
+     3→// quantifier mismatch, authority/popularity mention, circular pattern, burden shift, binary framing
+     4→// ใช้ "หลักการแยก" จริง — ไม่ใช่แค่ regex
+     5→
+     6→import type { Sentence, ArgumentStructure } from './types';
+     7→
+     8→// ============================================================
+     9→// คำศัพท์สำหรับ Deep Analysis (กลุ่มใหม่)
+    10→// ============================================================
+    11→
+    12→// คำโจมตีบุคคล — แยกตามประเภทการโจมตี
+    13→const PERSON_ATTACK_IDENTITY = [
+    14→  'ผู้หญิงอย่างคุณ', 'คนอย่างเธอ', 'คนอย่างคุณ', 'คนแบบนี้', 'คนพวกนี้',
+    15→  'พวกหัวก้าวหน้าเก๊', 'พวกอนุรักษ์นิยม', 'พวกเสื้อ', 'พวกสาย',
+    16→  'สาวโสด', 'แก่แล้ว', 'เด็กจบใหม่', 'นักศึกษา', 'เด็กฝึกงาน',
+    17→  'คนตกงาน', 'คนหย่าร้าง', 'คนไม่มีลูก', 'คนขี้เมา', 'คนขี้เหนียว',
+    18→  'คนอ้วน', 'คนผอม', 'คนจน', 'คนรวย', 'คนต่างจังหวัด',
+    19→];
+    20→
+    21→const PERSON_ATTACK_CHARACTER = [
+    22→  'ขี้เกียจ', 'โง่', 'เลว', 'บ้า', 'เพี้ยน', 'คนพาล', 'ไร้ยางอาย',
+    23→  'เห็นแก่ตัว', 'หน้าด้าน', 'หลอกลวง', 'โกหก', 'ขี้โกหก', 'ทรยศ',
+    24→  'หน้าซื่อใจคด', 'คนชั่ว', 'เสียคน', 'คนไม่ดี', 'ไม่น่าเคารพ',
+    25→  'ไม่น่าเชื่อถือ', 'ไม่น่าไว้วางใจ', 'ไร้ความเชื่อถือ', 'ไม่มีคุณธรรม',
+    26→  'จับผิด', 'ระแวงเกินไป', 'หลงเชื่อ', 'ไม่มีสมอง', 'ไม่มีรสนิยม', 'ไม่ดูแลตัวเอง',
+    27→  'ไม่มีความรับผิดชอบ', 'ไม่มีวินัย', 'ไม่เหมาะสม',
+    28→];
+    29→
+    30→const PERSON_ATTACK_CREDENTIAL = [
+    31→  'ไม่ใช่ผู้เชี่ยวชาญ', 'ไม่มีความรู้', 'ไม่รู้เรื่อง', 'ไม่เข้าใจ',
+    32→  'ไม่ได้เรียน', 'ไม่มีวุฒิ', 'ไม่มีปริญญา', 'ไม่เคยทำ', 'ไม่เคยไป',
+    33→  'ไม่เคยแต่งงาน', 'ไม่มีลูก', 'ไม่เคยบริหาร', 'ไม่เคยทำธุรกิจ',
+    34→  'ไม่ได้เป็นสมาชิก', 'ไม่มีสิทธิ์', 'ไม่คู่ควร', 'จะมา...ได้ยังไง',
+    35→  'จะไปรู้...อะไร', 'จะไปเข้าใจ...อะไร', 'จะมาสอน...ได้ยังไง',
+    36→  'จะวิจารณ์...ได้ยังไง', 'จะพูด...ได้ยังไง', 'ฟังไม่ขึ้น', 'ไม่มีความหมาย',
+    37→];
+    38→
+    39→const PERSON_ATTACK_BEHAVIOR = [
+    40→  'เคยโกหก', 'เคยหลอก', 'เคยทำผิด', 'เคยโกง', 'เคยล้มละลาย', 'เคยล้มละวาย',
+    41→  'เคยทำธุรกิจเจ๊ง', 'เคยสอบตก', 'เคยเช่าบ้าน', 'ประวัติไม่ดี',
+    42→  'เคยถูกฟ้อง', 'เคยแพ้คดี', 'เคยมีข่าวฉาว', 'เคยตกงาน',
+    43→  'เคยสาย', 'เคยทำไม่สำเร็จ', 'ใช้รถส่วนตัว', 'บินบ่อย',
+    44→  'แอบดื่ม', 'สูบบุหรี่', 'ใช้มือถือรุ่นใหม่', 'ใส่เสื้อผ้ามือสอง',
+    45→  'แต่งตัวไม่เรียบร้อย', 'อ้วนจะตาย', 'ยังเป็นหนี้', 'ยังเช่าบ้าน', 'เสพติดอาหารขยะ', 'เสพติด',
+    46→  'ทำกับข้าวไม่เป็น', 'ใบขับขี่ถูกยึด', 'ไม่ได้ทำงานบริษัท',
+    47→  'เคยส่งของช้า', 'ส่งของช้า', 'เคยทำงานไม่ได้', 'ทำงานไม่ได้เลย',
+    48→  'ไม่ได้ทำดี', 'ไม่ได้ทำดีเลย', 'เคยมีเคราะห์', 'ตอนมีเคราะห์',
+    49→];
+    50→
+    51→// คำบอก " dismissal" หลังโจมตีบุคคล — สำคัญเพื่อแยก AH จากคำอธิบายทั่วไป
+    52→const DISMISSAL_PHRASES = [
+    53→  'จึงฟังไม่ขึ้น', 'จึงไม่น่าเชื่อถือ', 'จึงไม่น่าฟัง', 'จึงไร้สาระ',
+    54→  'ไม่ต้องฟัง', 'ไม่ต้องไปสนใจ', 'อย่าไปฟัง', 'อย่ารับฟัง',
+    55→  'อย่าเชื่อ', 'เชื่อไม่ได้', 'เชื่อถือไม่ได้', 'ฟังไม่ต้อง',
+    56→  'ไม่มีความหมาย', 'ไม่มีสิทธิ์', 'จะไปรู้', 'จะมา...ได้ยังไง',
+    57→  'ไม่คู่ควร', 'แสดงว่าคุณ', 'ก็แสดงว่า', 'สรุปว่าคุณ',
+    58→  'แสดงว่า', 'ก็เท่ากับคุณ', 'ก็เท่ากับว่า',
+    59→  // เพิ่ม: การ dismiss ผู้ไม่เห็นด้วยโดยตำหนิความเข้าใจ/ความรู้ของพวกเขา
+    60→  // เช่น "ใครไม่เชื่อก็คงไม่เข้าใจการศึกษา" = dismiss ผู้ไม่เห็นด้วยว่าไม่เข้าใจ
+    61→  'คงไม่เข้าใจ', 'ไม่เข้าใจการ', 'ก็คงไม่เข้าใจ', 'ก็คงโง่',
+    62→  'คงโง่', 'ก็คงไม่มีสมอง', 'ไม่มีสมอง', 'คงไม่รู้เรื่อง',
+    63→  'ไม่เข้าใจเรื่อง', 'ไม่รู้เรื่อง', 'ไม่เข้าใจ',
+    64→];
+    65→
+    66→// คำบอกการเลือกข้อมูลแบบ single case (Cherry Picking)
+    67→// (ลบ "สองคน" standalone ที่กว้างเกินไป — ต้องมี qualifier เช่น "จากการสำรวจสองคน")
+    68→const SINGLE_CASE_PHRASES = [
+    69→  'เคสคนไข้หนึ่ง', 'เคสหนึ่ง', 'คนไข้หนึ่ง', 'ตัวอย่างหนึ่ง',
+    70→  'โรงงานหนึ่ง', 'ร้านหนึ่ง', 'บริษัทหนึ่ง', 'หนึ่งร้าน', 'หนึ่งบริษัท',
+    71→  'คนหนึ่ง', 'คนนึง', 'ครั้งเดียว', 'วันเดียว', 'สัปดาห์เดียว', 'เดือนเดียว',
+    72→  'ลูกค้าคนหนึ่ง', 'บล็อกเกอร์คนหนึ่ง', 'ดาราดังคนหนึ่ง',
+    73→  'นักเรียนคนหนึ่ง', 'พนักงานคนหนึ่ง', 'เด็กคนหนึ่ง',
+    74→  'งานวิจัยหนึ่ง', 'งานวิจัยชิ้นเดียว', 'การศึกษาชิ้นเดียว',
+    75→  'หุ้นตัวนี้', 'ร้านตัวนี้', 'บริษัทตัวนี้',
+    76→  'ลองดูตัวอย่าง', 'ลองดูเคส', 'มาดู', 'ดูตัวอย่าง',
+    77→  'ดูสิ', 'ดูออฟฟิศที่', 'ดูร้านที่', 'ดูบริษัทที่',
+    78→  'จากการสำรวจพนักงานสองคน', 'จากการสำรวจสองคน',
+    79→  'สองร้าน', 'สองบริษัท', 'สองครั้ง', 'สามคน', 'สามร้าน', 'สามครั้ง',
+    80→  'ไม่กี่เสียง', 'สองสามอัน', 'ข้อยกเว้น', 'แค่ไม่กี่',
+    81→];
+    82→
+    83→// คำบอกการ "ปฏิเสธข้อมูลที่ขัดแย้ง" (Cherry Picking)
+    84→const EVIDENCE_REJECTION_PHRASES = [
+    85→  'ไม่ต้องไปดูหลักฐานอื่น', 'ไม่ต้องไปดูข้อมูลอื่น', 'ไม่ต้องเปิดดูข้อมูล',
+    86→  'ไม่จำเป็นต้องเปิดดู', 'ไม่ต้องดูหลักฐานที่ค้าน', 'ไม่ต้องไปดู',
+    87→  'อย่าถามหางานวิจัย', 'อย่าถามหาหลักฐาน', 'ไม่ต้องไปหาหลักฐานอื่น',
+    88→  'ข้ามงานวิจัย', 'ข้ามข้อมูล', 'ข้ามปัจจัย', 'ข้ามว่า',
+    89→  'ไม่บอกว่า', 'ไม่ได้บอกว่า', 'ไม่กล่าวถึง', 'ละเว้น',
+    90→  'เพิกเฉย', 'ไม่นับ', 'ยกเว้น', 'ปิดบัง', 'ซ่อน',
+    91→  'เลือกเฉพาะข้อมูลที่สนับสนุน', 'เลือกเฉพาะที่สนับสนุน',
+    92→  'เลือกแค่ชิ้นที่สนับสนุน', 'เลือกเฉพาะส่วนที่',
+    93→];
+    94→
+    95→// คำบอกการ "อ้างหลักฐานเดียว" + สรุป (Cherry Picking + Hasty Generalization)
+    96→const SINGLE_INSTANCE_VERBS = [
+    97→  'ลองดู', 'ดูสิ', 'ดูตัวอย่าง', 'มาดู', 'ลองมาดู',
+    98→  'เราเห็น', 'เราก็เห็น', 'พบว่า', 'เห็นได้จาก',
+    99→];
+   100→
+   101→// คำบอกการ "เปลี่ยนประเด็น" (Red Herring)
+   102→const TOPIC_SHIFT_PHRASES = [
+   103→  'ทำไมต้องพูดเรื่อง', 'ทำไมต้องถามเรื่อง', 'ทำไมไม่พูดถึง',
+   104→  'ในเมื่อ', 'แล้วทำไม...ไม่พูดถึง', 'แต่ที่สำคัญกว่า',
+   105→  'เราจะพูดเรื่อง...ทำไม', 'ปล่อยเรื่องนี้ไปก่อน',
+   106→  'เลิกพูดเรื่องนี้', 'อย่าพูดเรื่องนั้น', 'ว่าแต่',
+   107→  'เอาไว้ที่', 'กลับมาที่', 'มาคุยเรื่อง...ดีกว่า',
+   108→  'มาพูดเรื่อง...ดีกว่า', 'แทนที่จะ...มา', 'ปัญหาจริงๆ',
+   109→  'ปัญหาที่แท้จริง', 'ปัญหาอยู่ที่', 'ที่สำคัญกว่า',
+   110→  'ยิ่งไปกว่านั้น', 'ส่วนเรื่อง', 'อีกเรื่องหนึ่ง',
+   111→  'พูดถึงเรื่อง', 'ที่จริงแล้ว', 'อย่างไรก็ตาม',
+   112→  'แต่จริงๆ แล้ว', 'สมัยก่อน', 'เมื่อก่อนยุคปู่ย่า',
+   113→  'ในสมัยก่อน', 'ตอน...สมัยก่อน', 'จำตอน',
+   114→  'รัฐบาลเก่า', 'ที่ผ่านมา', 'ก่อนหน้านี้',
+   115→];
+   116→
+   117→// คำบอก causal chain (Slippery Slope)
+   118→const CAUSAL_CHAIN_PHRASES = [
+   119→  'ถ้า...ต่อไปจะ', 'ถ้า...แล้วจะ', 'ถ้า...สุดท้ายจะ',
+   120→  'ถ้า...ในที่สุดจะ', 'ถ้า...ท้ายที่สุดจะ', 'ถ้า...อีกหน่อย',
+   121→  'ถ้า...อีกไม่นาน', 'ถ้า...แล้วก็จะ', 'ถ้า...แล้วจะไม่มี',
+   122→  'ต่อไปจะ', 'สุดท้ายจะ', 'ในที่สุดจะ', 'ท้ายที่สุดจะ',
+   123→  'อีกหน่อยก็จะ', 'อีกไม่นานก็จะ', 'จะลุกลาม', 'จะบานปลาย',
+   124→  'จะนำไปสู่', 'จะตามมาด้วย', 'ก้าวสู่', 'เป็นผลให้',
+   125→  'จะไม่มีใคร', 'จะไม่มีการ', 'จะเกิด', 'จะกลายเป็น',
+   126→];
+   127→
+   128→// คำบอก binary framing (False Dilemma)
+   129→const BINARY_PHRASES = [
+   130→  'ต้องเลือกเลย', 'ต้องเลือก', 'จะเลือก...หรือจะเลือก',
+   131→  'จะ...หรือจะ...', 'จะเชื่อ...หรือจะเชื่อ', 'จะอยู่ข้าง...หรืออยู่ข้าง',
+   132→  'ไม่...ก็', 'ถ้าไม่...ก็ต้อง', 'ถ้าไม่...ก็แสดงว่า',
+   133→  'ถ้าไม่...=...', 'ก็เท่ากับ', 'ก็แสดงว่า', 'ก็แปลว่า',
+   134→  'ทางเลือกเดียว', 'ทางออกเดียว', 'วิธีเดียว', 'มีเพียงสองทาง',
+   135→  'ไม่มีทางอื่น', 'นอกจากนี้ไม่มี', 'มิฉะนั้น', 'ไม่งั้น',
+   136→  'ไม่ก็ไป', 'ไม่ก็', 'อย่างเดียว', 'เท่านั้นที่จะ',
+   137→  '= ไม่', '= สนับสนุน', '= ยอมรับ', '= ไม่อยาก', '= ไม่ห่วง',
+   138→];
+   139→
+   140→// คำบอก burden shift (Burden of Proof)
+   141→const BURDEN_SHIFT_PHRASES = [
+   142→  'พิสูจน์มาสิ', 'พิสูจน์ให้ฉันดู', 'พิสูจน์ให้ได้สิ', 'พิสูจน์ให้เห็นสิ',
+   143→  'พิสูจน์ว่าไม่จริง', 'พิสูจน์ว่าไม่ใช่', 'พิสูจน์ว่าไม่',
+   144→  'ถ้าพิสูจน์ไม่ได้', 'ถ้าไม่พิสูจน์', 'พิสูจน์ไม่ได้ก็แสดงว่า',
+   145→  'ยังไม่มีใครพิสูจน์ว่าไม่', 'ยังไม่มีหลักฐานพิสูจน์ว่าไม่',
+   146→  'ไม่มีหลักฐานว่าไม่', 'ไม่เห็นมีใครพิสูจน์',
+   147→  'คุณต้องพิสูจน์', 'คุณต่างหากที่ต้องพิสูจน์',
+   148→  'เป็นหน้าที่ของคุณ', 'ทำไมไม่พิสูจน์',
+   149→  'พวกคุณต้องเป็นคนพิสูจน์', 'พวกคุณเองก็ยังไม่เคยพิสูจน์',
+   150→  'แสดงบัญชีมาสิ', 'แสดงหลักฐานมา', 'แสดงว่าไม่จริง',
+   151→  'พิสูจน์ไม่ได้ว่า',
+   152→];
+   153→
+   154→// คำบอก authority mention (Appeal to Authority)
+   155→// (ลบ "ครูใหญ่" standalone ที่กว้างเกินไป — ประโยคปกติ "ครูใหญ่บอกว่า..." ไม่ใช่ AA)
+   156→const AUTHORITY_PHRASES = [
+   157→  'ผู้เชี่ยวชาญ', 'นักวิทยาศาสตร์', 'ศาสตราจารย์', 'แพทย์', 'หมอ',
+   158→  'นักวิจัย', 'ผู้บริหาร', 'ผู้นำ', 'นักเศรษฐศาสตร์', 'นักกฎหมาย',
+   159→  'ผู้รู้', 'ผู้ทรงคุณวุฒิ', 'นักปรัชญา', 'นักจิตวิทยา', 'นักฟิสิกส์',
+   160→  'นักคณิตศาสตร์', 'ผู้เชี่ยวชาญด้าน', 'ผู้มีอำนาจ', 'ผู้ใหญ่',
+   161→  'ด็อกเตอร์', 'ดาราดัง', 'นักแสดง', 'นักกีฬา', 'กูรู',
+   162→  'CEO', 'ผู้ว่า', 'รัฐมนตรี', 'นายก', 'นักวิชาการ',
+   163→  'ครูบาอาจารย์', 'หัวหน้าเก่า', 'นักโภชนาการ',
+   164→  'นักลงทุน', 'บล็อกเกอร์', 'อินฟลูเอนเซอร์', 'กูรูอสังหาริมทรัพย์',
+   165→  'นักจิตวิทยาชื่อดัง', 'ฝ่ายไอที', 'ผู้กำกับ',
+   166→];
+   167→
+   168→// คำบอก popularity mention (Appeal to Popularity)
+   169→const POPULARITY_PHRASES = [
+   170→  'คนส่วนใหญ่', 'หลายคน', 'ทุกคน', 'คนเป็นล้าน', 'ส่วนใหญ่',
+   171→  'เกือบทั้งหมด', 'คนจำนวนมาก', 'สังคม', 'ประชาชนส่วนใหญ่',
+   172→  'คนทั่วไป', 'คนเกือบทั้งหมด', 'คนมากมาย', 'มหาชน', 'เป็นที่นิยม',
+   173→  'ทุกคนเชื่อ', 'หลายฝ่าย', 'หลายแหล่ง', 'ใคร ๆ ก็',
+   174→  'ใคร ๆ ก็เชื่อ', 'ใคร ๆ ก็ใช้', 'ใคร ๆ ก็เห็นด้วย',
+   175→  'คนทั้งโครงการ', 'คนทั้งหมู่บ้าน', 'คนทั้งแผนก', 'คนทั้งบริษัท',
+   176→  'สมาชิกส่วนใหญ่', 'ประเทศที่พัฒนาแล้ว', 'หลายประเทศ',
+   177→  'ทำเงินสูงสุด', 'ขายดีที่สุด', 'เป็นที่หนึ่ง', 'ดังระดับโลก',
+   178→  'พ่อแม่ทุกคน', 'คนส่วนใหญ่ในโพล', 'คนส่วนใหญ่ในกลุ่ม',
+   179→];
+   180→
+   181→// คำบอก quantifier (Hasty Generalization)
+   182→const UNIVERSAL_QUANTIFIERS = [
+   183→  'ทุกคน', 'ทุกครั้ง', 'ทั้งหมด', /(?<!ำ)เสมอ/, 'ไม่เคย', 'ตลอดกาล',
+   184→  'ทั้งโลก', 'ทุกที่', 'ทั้งชาติ', 'ไม่มีสัก', 'ทุกคนเลย',
+   185→  'ไม่มีข้อยกเว้น', 'ไม่มีใคร', 'ทั้งวงการ', 'สรุปว่า',
+   186→  'แสดงถึง', 'แสดงว่าไม่มี', 'นิสัย', 'สรุปได้ว่า',
+   187→];
+   188→
+   189→const FEW_INSTANCES_PHRASES = [
+   190→  'สองคน', 'สองครั้ง', 'สองร้าน', 'สองวัน', 'สองบริษัท',
+   191→  'สามคน', 'สามครั้ง', 'สามร้าน', 'สามวัน', 'สามบริษัท',
+   192→  'ครั้งเดียว', 'วันเดียว', 'สัปดาห์เดียว', 'เดือนเดียว',
+   193→  'ไม่กี่คน', 'ไม่กี่ครั้ง', 'เพื่อนบ้านสองบ้าน', 'เพื่อนสามคน',
+   194→  'นักศึกษาสามคน', 'ผู้จัดการสองคน', 'เพื่อนต่างชาติสองคน',
+   195→  'ครั้งเดียวที่', 'วันเดียวที่', 'สัปดาห์เดียวที่',
+   196→];
+   197→
+   198→// คำบอก temporal→causal (False Cause)
+   199→const TEMPORAL_CAUSAL_PHRASES = [
+   200→  'ตั้งแต่', 'วันที่', 'หลังจาก', 'หลังจากที่', 'ตั้งแต่ที่',
+   201→  'ตั้งแต่บริษัท', 'ตั้งแต่โรงเรียน', 'ตั้งแต่รัฐบาล',
+   202→  'วันที่ไม่ได้', 'วันที่กิน', 'วันที่สวม',
+   203→  'หลังจากเปลี่ยน', 'หลังจากเมือง', 'หลังจากบริษัท',
+   204→  'ตั้งแต่ดื่ม', 'ตั้งแต่ฟัง', 'ตั้งแต่ติด',
+   205→  'พร้อมกัน', 'พร้อม', 'ตรงที่',
+   206→];
+   207→
+   208→// คำบอก circular reasoning (เฉพาะที่ชัดเจน — ไม่รวม "เพราะ" standalone ที่กว้างเกินไป)
+   209→const CIRCULAR_PHRASES = [
+   210→  // Self-reference: "X เพราะมัน X" or "X เพราะ X"
+   211→  'ถูกต้องเพราะมันถูกต้อง', 'จริงเพราะมันจริง', 'ดีเพราะมันดี',
+   212→  'ถูกเพราะมันถูก', 'ผิดเพราะมันผิด', 'เก่งเพราะมันเก่ง',
+   213→  // Definition = self-reference: "X คือ X ที่ Y"
+   214→  'ความรักแท้คือความรัก', 'ความจริงคือความจริง', 'ความดีคือความดี', 'ถูกต้องเพราะเป็นกฎหมาย', 'ถูกต้องเพราะเป็น',
+   215→  'เพราะมันเป็นความจริง', 'เพราะมันเป็น',
+   216→  'เป็นสามัญสำนึก', 'เป็นเรื่องปกติ',
+   217→  'เป็นที่ยอมรับ', 'เป็นความจริงที่ทุกคนรู้',
+   218→];
+   219→
+   220→// คำบอก straw man distortion
+   221→const STRAW_MAN_PHRASES = [
+   222→  'คุณคงคิดว่า', 'คุณก็แค่', 'คุณอยาก', 'คุณต้องการที่จะ',
+   223→  'คุณสนับสนูนให้', 'คุณเห็นด้วยกับการ', 'คุณจะให้',
+   224→  'หรือว่าคุณ', 'แสดงว่าคุณ', 'ก็แสดงว่าคุณ',
+   225→  'ก็แปลว่าคุณ', 'แปลว่าคุณ', 'สรุปว่าคุณ',
+   226→  'หมายถึงว่าคุณ', 'เข้าใจว่าคุณ', 'คุณกำลังบอกว่า',
+   227→  'พวกเขาต้องการ', 'พวกเขาอยาก', 'พวกเขาจะให้',
+   228→  'แท้จริงแล้วต้องการ', 'แท้จริงแล้วพวกเขา',
+   229→  'คุณไม่คิดถึง', 'คุณไม่ห่วง', 'คุณไม่สน',
+   230→  'คุณเสนอให้', 'เธอบอกว่าให้', 'เธอเสนอ',
+   231→  'เธอเสนอลด', 'คุณเสนองบ', 'คุณเสนอให้ลด',
+   232→  'แค่แนะนำให้ลด', 'แค่แนะนำ',
+   233→];
+   234→
+   235→// คำเชื่อมโยงระหว่าง claim กับ straw man
+   236→const STRAW_MAN_EXTREME = [
+   237→  'ไม่สนใจ', 'ไม่ห่วง', 'ไม่คิดถึง', 'ไม่ต้องการให้เรียน',
+   238→  'ไม่ต้องการให้มี', 'อยากให้เลิก', 'อยากให้ไม่มี',
+   239→  'อยากให้บริษัทไม่มีกฎ', 'ไม่อยากให้เด็กเรียน',
+   240→  'สนับสนูนให้คนเป็นมะเร็ง', 'ต้องการให้เกิดความวุ่นวาย',
+   241→  'ต้องการให้เกิดอนาธิปไตย', 'อยากให้ล้มรัฐบาล',
+   242→  'ไม่อยากให้เด็กเรียนรู้', 'อยากให้เด็กไม่เรียน',
+   243→  'คิดว่ายิ่งใช้เงินยิ่งดี', 'ไม่คิดถึงคน',
+   244→  'คิดว่ายิ่งใช้ยิ่งดี', 'ไม่สนใจสวัสดิการ',
+   245→  'ไม่เห็นความสำคัญ', 'ไม่เห็น',
+   246→];
+   247→
+   248→// ===== NEW: Additional deep patterns (v12 enhancement) =====
+   249→
+   250→// Ad Hominem: Group/identity-based attacks
+   251→const GROUP_ATTACK_TERMS = [
+   252→  'คนกรุง', 'คนบ้านนอก', 'คนต่างจังหวัด', 'คนเมือง',
+   253→  'แรงงานต่างด้าว', 'ผู้อพยพ', 'ชนกลุ่มน้อย',
+   254→  'คนรุ่นใหม่', 'คนรุ่นเก่า', 'Gen Z', 'เมื่อยวัย',
+   255→];
+   256→
+   257→// Straw Man: "Even you said" pattern
+   258→const CONCESSION_TWIST = [
+   259→  'แม้แต่คุณเองก็', 'คุณเองก็บอกว่า', 'ตามที่คุณเองเคยพูด',
+   260→  'คุณเองก็เคยทำ', 'คุณเองก็ยอมรับว่า',
+   261→];
+   262→
+   263→// False Cause: Coincidence markers
+   264→const COINCIDENCE_MARKERS = [
+   265→  'บังเอิญ', 'โดยบังเอิญ', 'เผอิญ', 'ความบังเอิญ',
+   266→  'ลื่นหลับ', 'คาดไม่ถึง', 'ไม่ได้ตั้งใจ',
+   267→];
+   268→
+   269→// Appeal to Popularity: Bandwagon markers
+   270→const BANDWAGON_PHRASES = [
+   271→  'ไม่อยากตกหล่น', 'อยากเป็นเหมือนคนอื่น', 'ทุกคนทำกัน',
+   272→  'ใครๆก็ทำ', 'เป็นเทรนด์', 'ตามกระแส',
+   273→  'ไม่อยากพลาด', 'ขาดตอน', 'ไม่อยากเสียเปรียบ',
+   274→];
+   275→
+   276→// Hasty Generalization: Temporal limited experience
+   277→const LIMITED_TIME_PHRASES = [
+   278→  'ช่วงนี้', 'เมื่อเร็วๆ นี้', 'ล่าสุด', 'เดี๋ยวนี้',
+   279→  'ไม่กี่วันนี้', 'สัปดาห์ที่แล้ว', 'ปีนี้',
+   280→];
+   281→
+   282→// Burden of Proof: Negative proof attempt
+   283→const NEGATIVE_PROOF_PHRASES = [
+   284→  'ยังไม่มีใครพิสูจน์ว่าผิด', 'ไม่มีใครพิสูจน์ว่าไม่จริง',
+   285→  'ยังไม่ถูกหักล้าง', 'ยังไม่มีหลักฐานขัดแย้ง',
+   286→  'ไม่เคยถูกพิสูจน์ว่าผิด', 'ยังเป็นไปได้',
+   287→];
+   288→
+   289→// Cherry Picking: Temporal selection
+   290→const TEMPORAL_SELECTION = [
+   291→  'เฉพาะช่วง', 'เฉพาะช่วงเวลา', 'เฉพาะเมื่อ',
+   292→  'ตอนนั้น', 'ช่วงนั้น', 'เวลานั้น',
+   293→  'เลือกช่วง', 'เลือกเวลา',
+   294→];
+   295→
+   296→// Red Herring: Appeal to emotion instead of reason
+   297→const EMOTION_REDIRECT = [
+   298→  'รู้สึก', 'ใจหาย', 'น่าเสียใจ', 'น่าสงสาร',
+   299→  'โกรธ', 'เสียใจ', 'เจ็บใจ', 'น้อยใจ',
+   300→];
+   301→
+   302→// ============================================================
+   303→// DeepFeatures Interface
+   304→// ============================================================
+   305→
+   306→export interface DeepFeatures {
+   307→  // Ad Hominem detection
+   308→  personAttack: {
+   309→    detected: boolean;
+   310→    target: 'identity' | 'character' | 'credential' | 'behavior' | 'none';
+   311→    attackTerms: string[];
+   312→    hasDismissal: boolean;       // มีการ dismiss argument หลังโจมตี
+   313→    attackThenDismissal: boolean; // โจมตี + dismiss = AH แท้
+   314→  };
+   315→  // Straw Man detection
+   316→  strawMan: {
+   317→    detected: boolean;
+   318→    hasDistortion: boolean;      // มีการตีความข้อโต้แย้งฝ่ายตรงข้าม
+   319→    hasExtreme: boolean;         // มีการขยายสู่ขั้วสุด
+   320→    distortionThenExtreme: boolean;
+   321→    terms: string[];
+   322→  };
+   323→  // Red Herring detection
+   324→  redHerring: {
+   325→    detected: boolean;
+   326→    hasTopicShift: boolean;
+   327→    shiftMarkers: string[];
+   328→    topicCount: number;          // จำนวนประเด็นที่เปลี่ยน
+   329→  };
+   330→  // False Dilemma detection
+   331→  falseDilemma: {
+   332→    detected: boolean;
+   333→    hasBinary: boolean;
+   334→    hasForcedChoice: boolean;
+   335→    binaryTerms: string[];
+   336→  };
+   337→  // Hasty Generalization detection
+   338→  hastyGeneralization: {
+   339→    detected: boolean;
+   340→    hasUniversal: boolean;
+   341→    hasFewInstances: boolean;
+   342→    universalThenFew: boolean;   // สรุปสากล + อ้างตัวอย่างน้อย
+   343→    universalTerms: string[];
+   344→    fewTerms: string[];
+   345→  };
+   346→  // False Cause detection
+   347→  falseCause: {
+   348→    detected: boolean;
+   349→    hasTemporal: boolean;
+   350→    hasCausalClaim: boolean;
+   351→    temporalThenCausal: boolean;
+   352→    terms: string[];
+   353→  };
+   354→  // Appeal to Authority detection
+   355→  appealToAuthority: {
+   356→    detected: boolean;
+   357→    hasAuthority: boolean;
+   358→    authorityIsEvidence: boolean; // authority เป็นหลักฐานหลัก
+   359→    terms: string[];
+   360→  };
+   361→  // Appeal to Popularity detection
+   362→  appealToPopularity: {
+   363→    detected: boolean;
+   364→    hasPopularity: boolean;
+   365→    popularityIsEvidence: boolean;
+   366→    terms: string[];
+   367→  };
+   368→  // Slippery Slope detection
+   369→  slipperySlope: {
+   370→    detected: boolean;
+   371→    chainLength: number;
+   372→    hasCausalChain: boolean;
+   373→    terms: string[];
+   374→  };
+   375→  // Circular Reasoning detection
+   376→  circularReasoning: {
+   377→    detected: boolean;
+   378→    hasCircularPhrase: boolean;
+   379→    hasTermRepetition: boolean;
+   380→    repeatedTerms: string[];
+   381→  };
+   382→  // Cherry Picking detection
+   383→  cherryPicking: {
+   384→    detected: boolean;
+   385→    hasSingleCase: boolean;
+   386→    hasEvidenceRejection: boolean;
+   387→    singleCaseTerms: string[];
+   388→    rejectionTerms: string[];
+   389→  };
+   390→  // Burden of Proof detection
+   391→  burdenOfProof: {
+   392→    detected: boolean;
+   393→    hasBurdenShift: boolean;
+   394→    hasAbsenceClaim: boolean;    // "no one can disprove" = true
+   395→    terms: string[];
+   396→  };
+   397→  // v12 enhancement fields
+   398→  hasGroupAttack: boolean;
+   399→  hasConcessionTwist: boolean;
+   400→  hasCoincidenceMarker: boolean;
+   401→  hasBandwagon: boolean;
+   402→  hasLimitedTime: boolean;
+   403→  hasNegativeProof: boolean;
+   404→  hasTemporalSelection: boolean;
+   405→  hasEmotionRedirect: boolean;
+   406→}
+   407→
+   408→// ============================================================
+   409→// DeepAnalyzer class
+   410→// ============================================================
+   411→
+   412→export class DeepAnalyzer {
+   413→  analyze(text: string, sentences: Sentence[], structure: ArgumentStructure): DeepFeatures {
+   414→    const lower = text;
+   415→    return {
+   416→      personAttack: this.detectPersonAttack(lower, sentences),
+   417→      strawMan: this.detectStrawMan(lower, sentences),
+   418→      redHerring: this.detectRedHerring(lower, sentences, structure),
+   419→      falseDilemma: this.detectFalseDilemma(lower, sentences),
+   420→      hastyGeneralization: this.detectHastyGeneralization(lower, sentences),
+   421→      falseCause: this.detectFalseCause(lower, sentences),
+   422→      appealToAuthority: this.detectAppealToAuthority(lower, sentences),
+   423→      appealToPopularity: this.detectAppealToPopularity(lower, sentences),
+   424→      slipperySlope: this.detectSlipperySlope(lower, sentences),
+   425→      circularReasoning: this.detectCircularReasoning(lower, sentences),
+   426→      cherryPicking: this.detectCherryPicking(lower, sentences),
+   427→      burdenOfProof: this.detectBurdenOfProof(lower, sentences),
+   428→      // v12 enhancement detections
+   429→      hasGroupAttack: this.detectGroupAttack(lower).detected,
+   430→      hasConcessionTwist: this.detectConcessionTwist(lower).detected,
+   431→      hasCoincidenceMarker: this.detectCoincidenceVsCause(lower).detected,
+   432→      hasBandwagon: this.detectBandwagon(lower).detected,
+   433→      hasLimitedTime: this.detectLimitedTimeGeneralization(lower).detected,
+   434→      hasNegativeProof: this.detectNegativeProof(lower).detected,
+   435→      hasTemporalSelection: this.detectTemporalSelection(lower).detected,
+   436→      hasEmotionRedirect: this.detectEmotionRedirect(lower).detected,
+   437→    };
+   438→  }
+   439→
+   440→  // ----- Ad Hominem: โจมตีบุคคล + dismissal -----
+   441→  private detectPersonAttack(text: string, sentences: Sentence[]) {
+   442→    const allAttackTerms = [
+   443→      ...PERSON_ATTACK_IDENTITY,
+   444→      ...PERSON_ATTACK_CHARACTER,
+   445→      ...PERSON_ATTACK_CREDENTIAL,
+   446→      ...PERSON_ATTACK_BEHAVIOR,
+   447→    ];
+   448→    const attackTerms = allAttackTerms.filter((t) => text.includes(t));
+   449→    const hasAttack = attackTerms.length > 0;
+   450→
+   451→    // ระบุ target type
+   452→    let target: DeepFeatures['personAttack']['target'] = 'none';
+   453→    if (PERSON_ATTACK_IDENTITY.some((t) => text.includes(t))) target = 'identity';
+   454→    else if (PERSON_ATTACK_CHARACTER.some((t) => text.includes(t))) target = 'character';
+   455→    else if (PERSON_ATTACK_CREDENTIAL.some((t) => text.includes(t))) target = 'credential';
+   456→    else if (PERSON_ATTACK_BEHAVIOR.some((t) => text.includes(t))) target = 'behavior';
+   457→
+   458→    // ตรวจ dismissal
+   459→    const hasDismissal = DISMISSAL_PHRASES.some((p) => text.includes(p));
+   460→
+   461→    // AH แท้ = โจมตี + dismiss ข้อโต้แย้ง
+   462→    const attackThenDismissal = hasAttack && hasDismissal;
+   463→
+   464→    return {
+   465→      detected: hasAttack,
+   466→      target,
+   467→      attackTerms,
+   468→      hasDismissal,
+   469→      attackThenDismissal,
+   470→    };
+   471→  }
+   472→
+   473→  // ----- Straw Man: distortion + extreme -----
+   474→  private detectStrawMan(text: string, sentences: Sentence[]) {
+   475→    const distortionTerms = STRAW_MAN_PHRASES.filter((p) => text.includes(p));
+   476→    const extremeTerms = STRAW_MAN_EXTREME.filter((p) => text.includes(p));
+   477→    const hasDistortion = distortionTerms.length > 0;
+   478→    const hasExtreme = extremeTerms.length > 0;
+   479→    // SM แท้ = ตีความข้อโต้แย้ง + ขยายสู่ขั้วสุด
+   480→    const distortionThenExtreme = hasDistortion && hasExtreme;
+   481→    return {
+   482→      detected: hasDistortion || hasExtreme,
+   483→      hasDistortion,
+   484→      hasExtreme,
+   485→      distortionThenExtreme,
+   486→      terms: [...distortionTerms, ...extremeTerms],
+   487→    };
+   488→  }
+   489→
+   490→  // ----- Red Herring: topic shift -----
+   491→  private detectRedHerring(text: string, sentences: Sentence[], structure: ArgumentStructure) {
+   492→    const shiftMarkers = TOPIC_SHIFT_PHRASES.filter((p) => text.includes(p));
+   493→    const hasTopicShift = shiftMarkers.length > 0;
+   494→    // นับจำนวนประเด็นที่เปลี่ยน (heuristic: นับ markers + topic keywords ที่ต่างกัน)
+   495→    const topicCount = structure.topicKeywords.length;
+   496→    return {
+   497→      detected: hasTopicShift,
+   498→      hasTopicShift,
+   499→      shiftMarkers,
+   500→      topicCount,
+   501→    };
+   502→  }
+   503→
+   504→  // ----- False Dilemma: binary framing + forced choice -----
+   505→  private detectFalseDilemma(text: string, sentences: Sentence[]) {
+   506→    const binaryTerms = BINARY_PHRASES.filter((p) => text.includes(p));
+   507→    const hasBinary = binaryTerms.length > 0;
+   508→    const hasForcedChoice = /ต้องเลือก|จะเลือก|จะเชื่อ|จะอยู่ข้าง/.test(text);
+   509→    return {
+   510→      detected: hasBinary || hasForcedChoice,
+   511→      hasBinary,
+   512→      hasForcedChoice,
+   513→      binaryTerms,
+   514→    };
+   515→  }
+   516→
+   517→  // ----- Hasty Generalization: universal + few instances -----
+   518→  private detectHastyGeneralization(text: string, sentences: Sentence[]) {
+   519→    const universalTerms = UNIVERSAL_QUANTIFIERS.filter((t) =>
+   520→      typeof t === 'string' ? text.includes(t) : t.test(text),
+   521→    );
+   522→    const fewTerms = FEW_INSTANCES_PHRASES.filter((p) => text.includes(p));
+   523→    const hasUniversal = universalTerms.length > 0;
+   524→    const hasFewInstances = fewTerms.length > 0;
+   525→    // HG แท้ = อ้างคำสากล + อ้างตัวอย่างน้อย (quantifier mismatch)
+   526→    const universalThenFew = hasUniversal && hasFewInstances;
+   527→    return {
+   528→      detected: hasUniversal,
+   529→      hasUniversal,
+   530→      hasFewInstances,
+   531→      universalThenFew,
+   532→      universalTerms: universalTerms.map((t) => (typeof t === 'string' ? t : t.source)),
+   533→      fewTerms,
+   534→    };
+   535→  }
+   536→
+   537→  // ----- False Cause: temporal → causal -----
+   538→  private detectFalseCause(text: string, sentences: Sentence[]) {
+   539→    const temporalTerms = TEMPORAL_CAUSAL_PHRASES.filter((p) => text.includes(p));
+   540→    const hasTemporal = temporalTerms.length > 0;
+   541→    // causal claim: หลัง temporal มี "ทำให้", "ส่งผลให้", "เป็นเหตุ", "เพราะ", "จึง"
+   542→    // + "ป้องกัน", "ลด", "รักษา", "นำโชค", "ทำให้แข็งแรง", "ช่วย"
+   543→    const causalClaimPattern = /(ทำให้|ส่งผลให้|เป็นเหตุให้|จึง|เพราะ|นำไปสู่|ก่อให้เกิด|แสดงว่า|สรุปว่า|ป้องกัน|ลดน้ำหนัก|รักษาได้|นำโชค|ทำให้แข็งแรง|ช่วยให้|ช่วย|ป้องกันโรค|ลดได้|รักษา|นำโชคมา|ทำให้งานดี|ทำให้.{0,10}ขึ้น)/;
+   544→    const hasCausalClaim = causalClaimPattern.test(text);
+   545→    // FC แท้ = temporal + causal claim (เหตุการณ์หนึ่งก่อน→อีกเหตุการณ์หลัง = เหตุ)
+   546→    const temporalThenCausal = hasTemporal && hasCausalClaim;
+   547→    return {
+   548→      detected: temporalThenCausal,
+   549→      hasTemporal,
+   550→      hasCausalClaim,
+   551→      temporalThenCausal,
+   552→      terms: temporalTerms,
+   553→    };
+   554→  }
+   555→
+   556→  // ----- Appeal to Authority -----
+   557→  private detectAppealToAuthority(text: string, sentences: Sentence[]) {
+   558→    const terms = AUTHORITY_PHRASES.filter((p) => text.includes(p));
+   559→    const hasAuthority = terms.length > 0;
+   560→    // authority เป็นหลักฐานหลัก: มี "บอกว่า", "แนะนำ", "เชื่อ", "รับรอง", "ยืนยัน" หลัง authority
+   561→    const authorityIsEvidence = hasAuthority && /(บอกว่า|แนะนำ|เชื่อ|รับรอง|ยืนยัน|สอน|พูด|บอก|แนะนำให้)/.test(text);
+   562→    return {
+   563→      detected: hasAuthority,
+   564→      hasAuthority,
+   565→      authorityIsEvidence,
+   566→      terms,
+   567→    };
+   568→  }
+   569→
+   570→  // ----- Appeal to Popularity -----
+   571→  private detectAppealToPopularity(text: string, sentences: Sentence[]) {
+   572→    const terms = POPULARITY_PHRASES.filter((p) => text.includes(p));
+   573→    const hasPopularity = terms.length > 0;
+   574→    // popularity เป็นหลักฐาน: "จึงต้อง", "ต้องดี", "ต้องถูก", "แน่", "จริง"
+   575→    const popularityIsEvidence = hasPopularity && /(ต้อง|จึง|แน่|จริง|ก็|แสดงว่า|สรุป)/.test(text);
+   576→    return {
+   577→      detected: hasPopularity,
+   578→      hasPopularity,
+   579→      popularityIsEvidence,
+   580→      terms,
+   581→    };
+   582→  }
+   583→
+   584→  // ----- Slippery Slope: causal chain -----
+   585→  private detectSlipperySlope(text: string, sentences: Sentence[]) {
+   586→    const terms = CAUSAL_CHAIN_PHRASES.filter((p) => text.includes(p));
+   587→    // นับจำนวน "ถ้า...จะ" patterns ใน text
+   588→    const ifCount = (text.match(/ถ้า/g) || []).length;
+   589→    const willCount = (text.match(/จะ/g) || []).length;
+   590→    // chain length: จำนวน if-then pairs (heuristic)
+   591→    const chainLength = Math.min(ifCount, willCount);
+   592→    const hasCausalChain = terms.length > 0 || (ifCount >= 1 && willCount >= 2);
+   593→    return {
+   594→      detected: hasCausalChain,
+   595→      chainLength,
+   596→      hasCausalChain,
+   597→      terms,
+   598→    };
+   599→  }
+   600→
+   601→  // ----- Circular Reasoning: phrase + term repetition -----
+   602→  private detectCircularReasoning(text: string, sentences: Sentence[]) {
+   603→    const hasCircularPhrase = CIRCULAR_PHRASES.some((p) => text.includes(p));
+   604→    // term repetition: strict มาก — ต้องมี phrase ที่ยาว >= 8 ตัวอักษรที่ซ้ำกัน
+   605→    // และเป็น phrase ที่ "meaningful" (มีแก่นความหมาย)
+   606→    const repeatedTerms = this.findRepeatedPhrases(text);
+   607→    const hasTermRepetition = repeatedTerms.length > 0;
+   608→    // ต้องมี BOTH: circular phrase AND term repetition เพื่อลด false positive
+   609→    // หรือมี term repetition ที่ยาวมาก (>= 15 ตัว) — เพิ่มจาก 10 → 15 เพื่อลด false positive อย่างมาก
+   610→    // (phrase 12 ตัวเช่น "ครูคนนี้เก่ง" ซ้ำกันไม่ใช่ circular แท้ — เป็นแค่ repetition ของ conclusion)
+   611→    // circular แท้ต้องเป็น phrase ยาวที่เป็น self-reference เช่น "เป็นความจริงเพราะเป็นความจริง"
+   612→    const strongCircular = hasTermRepetition && repeatedTerms.some((p) => p.length >= 15);
+   613→    // เพิ่ม: ตรวจ circular แบบ "A เพราะ B และ B ... A" (mutual reference)
+   614→    // เช่น "กฎนี้ยุติธรรมเพราะคณะกรรมการอนุมัติ และคณะกรรมการอนุมัติสิ่งที่ยุติธรรม"
+   615→    // รูปแบบ: เพราะ X และ X (ย้อนกลับมาที่ concept เดิม)
+   616→    const hasMutualReference = /เพราะ.{3,25}และ.{0,10}\S{3,15}.{0,5}(ยุติธรรม|น่าเชื่อถือ|ถูกต้อง|ดี|จริง)/.test(text);
+   617→    return {
+   618→      detected: hasCircularPhrase || strongCircular || hasMutualReference,
+   619→      hasCircularPhrase,
+   620→      hasTermRepetition: strongCircular,
+   621→      repeatedTerms,
+   622→    };
+   623→  }
+   624→
+   625→  // ----- Cherry Picking: single case + evidence rejection -----
+   626→  private detectCherryPicking(text: string, sentences: Sentence[]) {
+   627→    const singleCaseTerms = SINGLE_CASE_PHRASES.filter((p) => text.includes(p));
+   628→    const rejectionTerms = EVIDENCE_REJECTION_PHRASES.filter((p) => text.includes(p));
+   629→    const hasSingleCase = singleCaseTerms.length > 0;
+   630→    const hasEvidenceRejection = rejectionTerms.length > 0;
+   631→    // CP แท้ = single case OR evidence rejection
+   632→    const detected = hasSingleCase || hasEvidenceRejection;
+   633→    return {
+   634→      detected,
+   635→      hasSingleCase,
+   636→      hasEvidenceRejection,
+   637→      singleCaseTerms,
+   638→      rejectionTerms,
+   639→    };
+   640→  }
+   641→
+   642→  // ----- Burden of Proof: burden shift + absence claim -----
+   643→  private detectBurdenOfProof(text: string, sentences: Sentence[]) {
+   644→    const terms = BURDEN_SHIFT_PHRASES.filter((p) => text.includes(p));
+   645→    const hasBurdenShift = terms.length > 0;
+   646→    // absence claim: "ยังไม่มีใครพิสูจน์", "ไม่มีหลักฐาน"
+   647→    const hasAbsenceClaim = /(ยังไม่มีใครพิสูจน์|ยังไม่มีหลักฐาน|ไม่มีหลักฐานว่า|ไม่เห็นมีใคร|ไม่มีใครพิสูจน์)/.test(text);
+   648→    return {
+   649→      detected: hasBurdenShift || hasAbsenceClaim,
+   650→      hasBurdenShift,
+   651→      hasAbsenceClaim,
+   652→      terms,
+   653→    };
+   654→  }
+   655→
+   656→  // ----- v12 Enhancement: Group Attack -----
+   657→  detectGroupAttack(text: string): { detected: boolean; details: string } {
+   658→    const found = GROUP_ATTACK_TERMS.filter(t => text.includes(t));
+   659→    if (found.length > 0) {
+   660→      return { detected: true, details: `พบการโจมตีกลุ่ม: ${found.join(', ')}` };
+   661→    }
+   662→    return { detected: false, details: '' };
+   663→  }
+   664→
+   665→  // ----- v12 Enhancement: Concession Twist -----
+   666→  detectConcessionTwist(text: string): { detected: boolean; details: string } {
+   667→    const found = CONCESSION_TWIST.filter(t => text.includes(t));
+   668→    if (found.length > 0) {
+   669→      return { detected: true, details: `พบการบิดเบือนการยอมรับ: ${found.join(', ')}` };
+   670→    }
+   671→    return { detected: false, details: '' };
+   672→  }
+   673→
+   674→  // ----- v12 Enhancement: Coincidence vs Cause -----
+   675→  detectCoincidenceVsCause(text: string): { detected: boolean; details: string } {
+   676→    const hasCausal = CAUSAL_CHAIN_PHRASES.some(p => text.includes(p));
+   677→    const hasCoincidence = COINCIDENCE_MARKERS.some(p => text.includes(p));
+   678→    if (hasCausal && hasCoincidence) {
+   679→      return { detected: true, details: 'พบการสันนิษฐานเหตุผลจากความบังเอิญ' };
+   680→    }
+   681→    return { detected: false, details: '' };
+   682→  }
+   683→
+   684→  // ----- v12 Enhancement: Bandwagon -----
+   685→  detectBandwagon(text: string): { detected: boolean; details: string } {
+   686→    const found = BANDWAGON_PHRASES.filter(t => text.includes(t));
+   687→    if (found.length > 0) {
+   688→      return { detected: true, details: `พบการอ้างกระแสสังคม: ${found.join(', ')}` };
+   689→    }
+   690→    return { detected: false, details: '' };
+   691→  }
+   692→
+   693→  // ----- v12 Enhancement: Limited Time Generalization -----
+   694→  detectLimitedTimeGeneralization(text: string): { detected: boolean; details: string } {
+   695→    const hasLimitedTime = LIMITED_TIME_PHRASES.some(t => text.includes(t));
+   696→    const hasUniversal = UNIVERSAL_QUANTIFIERS.some(t => typeof t === 'string' ? text.includes(t) : t.test(text));
+   697→    if (hasLimitedTime && hasUniversal) {
+   698→      return { detected: true, details: 'พบการสรุปจากช่วงเวลาจำกัด' };
+   699→    }
+   700→    return { detected: false, details: '' };
+   701→  }
+   702→
+   703→  // ----- v12 Enhancement: Negative Proof -----
+   704→  detectNegativeProof(text: string): { detected: boolean; details: string } {
+   705→    const found = NEGATIVE_PROOF_PHRASES.filter(t => text.includes(t));
+   706→    if (found.length > 0) {
+   707→      return { detected: true, details: `พบการอ้างหลักฐานเชิงลบ: ${found.join(', ')}` };
+   708→    }
+   709→    return { detected: false, details: '' };
+   710→  }
+   711→
+   712→  // ----- v12 Enhancement: Temporal Selection -----
+   713→  detectTemporalSelection(text: string): { detected: boolean; details: string } {
+   714→    const hasTempSelection = TEMPORAL_SELECTION.filter(t => text.includes(t)).length >= 2;
+   715→    const hasSelective = EVIDENCE_REJECTION_PHRASES.some(t => text.includes(t));
+   716→    if (hasTempSelection || (hasTempSelection && hasSelective)) {
+   717→      return { detected: true, details: 'พบการเลือกช่วงเวลา' };
+   718→    }
+   719→    return { detected: false, details: '' };
+   720→  }
+   721→
+   722→  // ----- v12 Enhancement: Emotion Redirect -----
+   723→  detectEmotionRedirect(text: string): { detected: boolean; details: string } {
+   724→    const hasEmotion = EMOTION_REDIRECT.filter(t => text.includes(t)).length >= 2;
+   725→    const hasDiversion = TOPIC_SHIFT_PHRASES.some(t => text.includes(t));
+   726→    if (hasEmotion && hasDiversion) {
+   727→      return { detected: true, details: 'พบการเบี่ยงเบนไปยังอารมณ์' };
+   728→    }
+   729→    return { detected: false, details: '' };
+   730→  }
+   731→
+   732→  // ค้นหา phrase ที่ซ้ำกัน (สำหรับ Circular Reasoning) — strict มาก
+   733→  // ต้องเป็น phrase ที่ยาว >= 5 ตัวอักษร และไม่ใช่คำสันธาน/บุพบท/คำทั่วไป
+   734→  private findRepeatedPhrases(text: string): string[] {
+   735→    // คำที่ไม่นับเป็น "circular" (common words, conjunctions, pronouns)
+   736→    const STOP_WORDS = new Set([
+   737→      'ที่', 'และ', 'หรือ', 'ไม่', 'เป็น', 'มี', 'จะ', 'ก็', 'ให้', 'ได้',
+   738→      'คุณ', 'เขา', 'เธอ', 'พวก', 'เรา', 'ฉัน', 'ผม', 'มัน', 'กัน',
+   739→      'เพราะ', 'จึง', 'แล้ว', 'กับ', 'ของ', 'ใน', 'บน', 'ไป', 'มา',
+   740→      'นี้', 'นั้น', 'นู้น', 'ไหน', 'อะไร', 'ยังไง', 'อย่าง', 'แบบ',
+   741→      'เพื่อ', 'ว่า', 'ใหม่', 'ทุก', 'บาง', 'ก่อน', 'หลัง', 'ต่อ',
+   742→      'อีก', 'เดียว', 'เท่า', 'มาก', 'น้อย', 'ดี', 'เลว', 'ต้อง',
+   743→      'คน', 'เรื่อง', 'การ', 'ทาง', 'อย่างเดียว', 'แค่', 'ก็แค่',
+   744→      'ส่วน', 'ถ้า', 'ก็เพราะ', 'นอกจาก', 'แต่', 'อย่างไรก็ตาม',
+   745→      'โดย', 'ผ่าน', 'พร้อม', 'ตาม', 'อัน', 'ครั้ง', 'วัน', 'ปี',
+   746→      'หนึ่ง', 'สอง', 'สาม', 'สี่', 'ห้า', 'ไม่กี่',
+   747→    ]);
+   748→
+   749→    const phrases: string[] = [];
+   750→    const minLen = 5;
+   751→    const maxLen = 14;
+   752→    const clean = text.replace(/[\s.,!?;:()"'']/g, '');
+   753→    const seen = new Map<string, number>();
+   754→    for (let len = minLen; len <= maxLen; len++) {
+   755→      for (let i = 0; i <= clean.length - len; i++) {
+   756→        const phrase = clean.substring(i, i + len);
+   757→        const count = (seen.get(phrase) ?? 0) + 1;
+   758→        seen.set(phrase, count);
+   759→        if (count === 2 && phrase.length >= 5) {
+   760→          // ตรวจว่า phrase มีแค่ stop words หรือไม่ (อย่างน้อยต้องมีคำที่ไม่ใช่ stop word)
+   761→          // สำหรับภาษาไทย เราแบ่งคำไม่ได้ง่าย — ใช้ heuristic: phrase ต้องไม่อยู่ใน STOP_WORDS
+   762→          if (!STOP_WORDS.has(phrase) && phrase.length >= 5) {
+   763→            phrases.push(phrase);
+   764→          }
+   765→        }
+   766→      }
+   767→    }
+   768→    const unique = [...new Set(phrases)];
+   769→    unique.sort((a, b) => b.length - a.length);
+   770→    const result: string[] = [];
+   771→    for (const p of unique) {
+   772→      if (!result.some((r) => r.includes(p) || p.includes(r))) {
+   773→        result.push(p);
+   774→      }
+   775→    }
+   776→    return result.slice(0, 3);
+   777→  }
+   778→}
+   779→

@@ -1,0 +1,940 @@
+     1→     1→// AxiomCore Engine - Fallacy Detector (v2 — Deep Structural)
+     2→     2→// ใช้ DeepFeatures เป็น "หลักการแยก" หลัก + regex เป็นเสริม
+     3→     3→// มี conflict resolution: กรอง false positives, เสริม missed detections
+     4→     4→
+     5→     5→import type {
+     6→     6→  Sentence,
+     7→     7→  ArgumentStructure,
+     8→     8→  FallacySignal,
+     9→     9→  DetectedFallacy,
+    10→    10→  FallacyType,
+    11→    11→} from './types';
+    12→    12→import { FALLACY_META } from './types';
+    13→    13→import { DETECTION_RULES, RULES_BY_TYPE } from './fallacies/rules';
+    14→    14→import { SemanticAnalyzer } from './semantic-analyzer';
+    15→    15→import { DeepAnalyzer, type DeepFeatures } from './deep-analyzer';
+    16→    16→
+    17→    17→// ===== Confidence Scoring System =====
+    18→    18→export interface ConfidenceInput {
+    19→    19→  type: FallacyType;
+    20→    20→  signals: FallacySignal[];
+    21→    21→  sentenceCount: number;
+    22→    22→  structureStrength: number; // 0-1 ความชัดเจนของโครงสร้างการโต้แย้ง
+    23→    23→}
+    24→    24→
+    25→    25→export class ConfidenceScorer {
+    26→    26→  // ค่าสูงสุดของ confidence — ไม่มีวัน 100% เพราะการวิเคราะห์ rule-based
+    27→    27→  // ย่อมมีความเสี่ยง False Positive ต่ำเสมอ
+    28→    28→  private readonly MAX_CONFIDENCE = 0.92;
+    29→    29→
+    30→    30→  /**
+    31→    31→   * คำนวณความมั่นใจรวมของตรรกะวิบัติแต่ละประเภท
+    32→    32→   *
+    33→    33→   * โมเดลใหม่ (realistic distribution):
+    34→    34→   * - ใช้ noisy-OR สำหรับรวมสัญญาณ (diminishing returns)
+    35→    35→   * - แต่ละสัญญาณมี reliability = weight, ความน่าจะเป็นที่ตรวจพบจริง = weight × score
+    36→    36→   * - รวมด้วย noisy-OR: P = 1 - ∏(1 - p_i) แล้วลดด้วย base skepticism
+    37→    37→   * - โครงสร้างชัดเพิ่มความมั่นใจ, สัญญาณเดี่ยวลด
+    38→    38→   */
+    39→    39→  score(input: ConfidenceInput): { confidence: number; falsePositiveRisk: number } {
+    40→    40→    const { signals, structureStrength } = input;
+    41→    41→    if (signals.length === 0) {
+    42→    42→      return { confidence: 0, falsePositiveRisk: 0 };
+    43→    43→    }
+    44→    44→
+    45→    45→    // 1. คำนวณ reliability รายสัญญาณ (probability ที่สัญญาณนี้บ่งชี้ตรรกะวิบัติจริง)
+    46→    46→    // p_i = score * weight — แต่ละสัญญาณมีความน่าเชื่อถือเป็น weight ของกฎ
+    47→    47→    const probs = signals.map((s) => Math.min(0.85, s.score * s.weight));
+    48→    48→
+    49→    49→    // 2. รวมด้วย noisy-OR (diminishing returns — สัญญาณเพิ่มเติมให้ bonus ลดลง)
+    50→    50→    let probTrue = 0;
+    51→    51→    let probNotTrue = 1;
+    52→    52→    for (const p of probs) {
+    53→    53→      probNotTrue *= (1 - p);
+    54→    54→    }
+    55→    55→    probTrue = 1 - probNotTrue;
+    56→    56→
+    57→    57→    // 3. Base skepticism — rule-based ย่อมมีโอกาสผิด ลดลง 10%
+    58→    58→    let confidence = probTrue * 0.9;
+    59→    59→
+    60→    60→    // 4. ปรับตามโครงสร้างการโต้แย้ง (โครงสร้างชัด = เพิ่มความมั่นใจ สูงสุด +5%)
+    61→    61→    confidence += structureStrength * 0.05;
+    62→    62→
+    63→    63→    // 5. สัญญาณเดี่ยว = ลด 8% (เสี่ยง FP สูง)
+    64→    64→    if (signals.length === 1) {
+    65→    65→      confidence -= 0.08;
+    66→    66→    }
+    67→    67→
+    68→    68→    // 6. จำกัดที่ [0, MAX_CONFIDENCE]
+    69→    69→    confidence = Math.max(0, Math.min(this.MAX_CONFIDENCE, confidence));
+    70→    70→
+    71→    71→    // 7. คำนวณ False Positive Risk
+    72→    72→    // FP risk สูงเมื่อ: สัญญาณน้อย, confidence ปานกลาง, ไม่มี corroboration
+    73→    73→    const falsePositiveRisk = this.computeFalsePositiveRisk(confidence, signals.length, structureStrength);
+    74→    74→
+    75→    75→    return {
+    76→    76→      confidence: Math.round(confidence * 100) / 100,
+    77→    77→      falsePositiveRisk: Math.round(falsePositiveRisk * 100) / 100,
+    78→    78→    };
+    79→    79→  }
+    80→    80→
+    81→    81→  /**
+    82→    82→   * คำนวณความเสี่ยง False Positive อย่างสมจริง
+    83→    83→   *
+    84→    84→   * ปัจจัย:
+    85→    85→   * - confidence สูง → FP risk ต่ำ (แต่ไม่เป็น 0 — rule-based ย่อมมีโอกาสผิด)
+    86→    86→   * - สัญญาณเดี่ยว → FP risk สูง
+    87→    87→   * - ไม่มีโครงสร้างการโต้แย้ง → FP risk สูง (อาจเป็นประโยคธรรมดา)
+    88→    88→   * - มีเพียง regex match โดยไม่มี structural corroboration → FP risk สูงขึ้น
+    89→    89→   */
+    90→    90→  private computeFalsePositiveRisk(
+    91→    91→    confidence: number,
+    92→    92→    signalCount: number,
+    93→    93→    structureStrength: number,
+    94→    94→  ): number {
+    95→    95→    // Base FP risk — ขั้นต่ำ 8% เสมอ (rule-based analysis ย่อมไม่แน่นอน 100%)
+    96→    96→    let risk = 0.08;
+    97→    97→
+    98→    98→    // ความสัมพันธ์ผกผันกับ confidence — แต่ใช้ด่างแบบนุ่มนวล
+    99→    99→    // confidence สูง → ลด risk ลง แต่ไม่เหลือ 0
+   100→   100→    const confidenceDeduction = confidence * 0.4; // สูงสุด 0.36
+   101→   101→    risk += (0.45 - confidenceDeduction);
+   102→   102→
+   103→   103→    // สัญญาณเดี่ยว → เพิ่ม risk
+   104→   104→    if (signalCount === 1) risk += 0.12;
+   105→   105→    else if (signalCount === 2) risk += 0.04;
+   106→   106→    // 3+ สัญญาณ: ไม่เพิ่ม (corroboration ช่วย)
+   107→   107→
+   108→   108→    // ไม่มีโครงสร้างการโต้แย้ง → เพิ่ม risk (อาจเป็นประโยคสั้นที่บังเอิญ match pattern)
+   109→   109→    risk += (1 - structureStrength) * 0.1;
+   110→   110→
+   111→   111→    // จำกัดที่ [0.05, 0.85]
+   112→   112→    return Math.max(0.05, Math.min(0.85, risk));
+   113→   113→  }
+   114→   114→
+   115→   115→  label(confidence: number): DetectedFallacy['confidenceLabel'] {
+   116→   116→    if (confidence >= 0.75) return 'สูงมาก';
+   117→   117→    if (confidence >= 0.55) return 'สูง';
+   118→   118→    if (confidence >= 0.35) return 'ปานกลาง';
+   119→   119→    return 'ต่ำ';
+   120→   120→  }
+   121→   121→
+   122→   122→  /**
+   123→   123→   * คำนวณความมั่นใจรวมของการวิเคราะห์ทั้งหมด
+   124→   124→   */
+   125→   125→  overallConfidence(detected: DetectedFallacy[]): number {
+   126→   126→    if (detected.length === 0) return 0;
+   127→   127→    const sum = detected.reduce((acc, d) => acc + d.confidence, 0);
+   128→   128→    return Math.round((sum / detected.length) * 100) / 100;
+   129→   129→  }
+   130→   130→
+   131→   131→  /**
+   132→   132→   * สร้างข้อความอธิบายเหตุผลของ false positive risk
+   133→   133→   */
+   134→   134→  explainFalsePositive(type: FallacyType, risk: number, signalCount: number): string {
+   135→   135→    const meta = FALLACY_META[type];
+   136→   136→    if (risk < 0.2) {
+   137→   137→      return `พบสัญญาณหลายตัวที่สอดคล้องกันและโครงสร้างการโต้แย้งชัดเจน ความเสี่ยงว่าจะเป็น "${meta.nameTh}" เท็จอยู่ในระดับต่ำ (แต่ยังมีโอกาสคลาดเคลื่อนเล็กน้อยจากการวิเคราะห์ด้วยกฎ)`;
+   138→   138→    }
+   139→   139→    if (risk < 0.4) {
+   140→   140→      return `ความเสี่ยงปานกลาง: รูปแบบที่พบอาจเกิดจากการใช้ถ้อยคำในเชิงวาทกรรมโดยไม่ได้ตั้งใจสร้างตรรกะวิบัติ ควรพิจารณาบริบทเพิ่มเติม`;
+   141→   141→    }
+   142→   142→    if (signalCount === 1) {
+   143→   143→      return `ตรวจพบสัญญาณเดียว อาจเป็นการใช้คำโดยบังเอิญที่ match pattern โดยไม่ได้เป็นตรรกะวิบัติจริง ควรพิจารณาบริบทและเจตนาของผู้พูด`;
+   144→   144→    }
+   145→   145→    return `ความเสี่ยงสูง: รูปแบบที่พบอาจเป็นการใช้ภาษาตามปกติ มิใช่ตรรกะวิบัติโดยเจตนา ควรตรวจสอบเพิ่มเติมก่อนสรุปผล`;
+   146→   146→  }
+   147→   147→}
+   148→   148→
+   149→   149→
+   150→   150→// ===== Fallacy Detector =====
+   151→   151→export class FallacyDetector {
+   152→   152→  private semantic = new SemanticAnalyzer();
+   153→   153→  private deep = new DeepAnalyzer();
+   154→   154→  private scorer = new ConfidenceScorer();
+   155→   155→
+   156→   156→  detect(
+   157→   157→    text: string,
+   158→   158→    sentences: Sentence[],
+   159→   159→    structure: ArgumentStructure,
+   160→   160→  ): DetectedFallacy[] {
+   161→   161→    const detected: DetectedFallacy[] = [];
+   162→   162→    const features = this.semantic.analyze(text);
+   163→   163→    const deepFeatures = this.deep.analyze(text, sentences, structure);
+   164→   164→    const structureStrength = this.computeStructureStrength(structure, sentences);
+   165→   165→
+   166→   166→    // 1. รวบรวม raw signals จากทุกประเภท (regex + semantic + structural)
+   167→   167→    const candidateMap = new Map<FallacyType, FallacySignal[]>();
+   168→   168→    for (const type of Object.keys(FALLACY_META) as FallacyType[]) {
+   169→   169→      const signals = this.collectSignals(type, text, sentences, structure, features, deepFeatures);
+   170→   170→      if (signals.length > 0) candidateMap.set(type, signals);
+   171→   171→    }
+   172→   172→
+   173→   173→    // 2. Apply deep filtering — กรอง false positives ด้วย DeepFeatures
+   174→   174→    const filteredMap = this.applyDeepFilter(candidateMap, deepFeatures);
+   175→   175→
+   176→   176→    // 3. Add missed detections — เพิ่ม detections ที่ DeepFeatures บอกว่ามีแต่ regex ไม่จับ
+   177→   177→    this.addMissedDetections(filteredMap, deepFeatures, text, sentences);
+   178→   178→
+   179→   179→    // 4. Conflict resolution — แยกประเภทที่ทับซ้อน
+   180→   180→    const resolvedMap = this.resolveConflicts(filteredMap, deepFeatures);
+   181→   181→
+   182→   182→    // 5. Build detected fallacies
+   183→   183→    for (const [type, signals] of resolvedMap) {
+   184→   184→      if (signals.length === 0) continue;
+   185→   185→      const { confidence, falsePositiveRisk } = this.scorer.score({
+   186→   186→        type,
+   187→   187→        signals,
+   188→   188→        sentenceCount: sentences.length,
+   189→   189→        structureStrength,
+   190→   190→      });
+   191→   191→      // threshold ขั้นต่ำ 0.48 — balance ระหว่าง false positive และ recall
+   192→   192→      if (confidence < 0.48) continue;
+   193→   193→      const detected_fallacy = this.buildDetectedFallacy(
+   194→   194→        type,
+   195→   195→        confidence,
+   196→   196→        falsePositiveRisk,
+   197→   197→        signals,
+   198→   198→        sentences,
+   199→   199→        structure,
+   200→   200→        features,
+   201→   201→        deepFeatures,
+   202→   202→      );
+   203→   203→      detected.push(detected_fallacy);
+   204→   204→    }
+   205→   205→
+   206→   206→    return detected.sort((a, b) => b.confidence - a.confidence);
+   207→   207→  }
+   208→   208→
+   209→   209→  /**
+   210→   210→   * รวบรวมสัญญาณ — regex + semantic + structural (จาก DeepFeatures)
+   211→   211→   */
+   212→   212→  private collectSignals(
+   213→   213→    type: FallacyType,
+   214→   214→    text: string,
+   215→   215→    sentences: Sentence[],
+   216→   216→    structure: ArgumentStructure,
+   217→   217→    features: ReturnType<SemanticAnalyzer['analyze']>,
+   218→   218→    deepFeatures: DeepFeatures,
+   219→   219→  ): FallacySignal[] {
+   220→   220→    const signals: FallacySignal[] = [];
+   221→   221→
+   222→   222→    // 1. กฎ regex (เหมือนเดิม)
+   223→   223→    const rules = RULES_BY_TYPE[type] ?? [];
+   224→   224→    for (const rule of rules) {
+   225→   225→      const match = text.match(rule.pattern);
+   226→   226→      if (match) {
+   227→   227→        const matchedText = [...text.matchAll(new RegExp(rule.pattern.source, 'g'))].map(
+   228→   228→          (m) => m[0],
+   229→   229→        );
+   230→   230→        const matchedSentences = sentences
+   231→   231→          .filter((s) => rule.pattern.test(s.text))
+   232→   232→          .map((s) => s.index);
+   233→   233→        signals.push({
+   234→   234→          type,
+   235→   235→          matchedPatterns: [rule.code],
+   236→   236→          matchedSentences,
+   237→   237→          matchedText,
+   238→   238→          score: 1.0,
+   239→   239→          weight: rule.weight,
+   240→   240→          reasoning: rule.description,
+   241→   241→        });
+   242→   242→      }
+   243→   243→    }
+   244→   244→
+   245→   245→    // 2. Deep structural signals (ใหม่ — ใช้หลักการแยกจริง)
+   246→   246→    this.addDeepSignals(type, signals, sentences, structure, features, deepFeatures);
+   247→   247→
+   248→   248→    return signals;
+   249→   249→  }
+   250→   250→
+   251→   251→  /**
+   252→   252→   * เพิ่ม deep signals จาก DeepFeatures — เป็น "หลักการแยก" จริง
+   253→   253→   */
+   254→   254→  private addDeepSignals(
+   255→   255→    type: FallacyType,
+   256→   256→    signals: FallaySignalHelper,
+   257→   257→    sentences: Sentence[],
+   258→   258→    structure: ArgumentStructure,
+   259→   259→    features: ReturnType<SemanticAnalyzer['analyze']>,
+   260→   260→    deep: DeepFeatures,
+   261→   261→  ) {
+   262→   262→    switch (type) {
+   263→   263→      case 'ad_hominem': {
+   264→   264→        // AH แท้: โจมตีบุคคล + dismiss ข้อโต้แย้ง
+   265→   265→        if (deep.personAttack.detected && deep.personAttack.hasDismissal) {
+   266→   266→          signals.push({
+   267→   267→            type,
+   268→   268→            matchedPatterns: ['AH-DEEP'],
+   269→   269→            matchedSentences: this.findSentencesWith(sentences, deep.personAttack.attackTerms),
+   270→   270→            matchedText: deep.personAttack.attackTerms,
+   271→   271→            score: 0.9, // strong structural signal
+   272→   272→            weight: 0.85,
+   273→   273→            reasoning: `โจมตี${this.targetLabel(deep.personAttack.target)}พร้อม dismiss ข้อโต้แย้ง (${deep.personAttack.attackTerms.slice(0, 3).join(', ')})`,
+   274→   274→          });
+   275→   275→        } else if (deep.personAttack.detected) {
+   276→   276→          // มีโจมตีบุคคล แต่ไม่มี dismissal — สัญญาณอ่อน
+   277→   277→          signals.push({
+   278→   278→            type,
+   279→   279→            matchedPatterns: ['AH-DEEP-WEAK'],
+   280→   280→            matchedSentences: this.findSentencesWith(sentences, deep.personAttack.attackTerms),
+   281→   281→            matchedText: deep.personAttack.attackTerms,
+   282→   282→            score: 0.5,
+   283→   283→            weight: 0.55,
+   284→   284→            reasoning: `มีคำโจมตี${this.targetLabel(deep.personAttack.target)} แต่ไม่ชัดเจนว่า dismiss ข้อโต้แย้ง`,
+   285→   285→          });
+   286→   286→        }
+   287→   287→        break;
+   288→   288→      }
+   289→   289→      case 'straw_man': {
+   290→   290→        // SM แท้: ตีความข้อโต้แย้งฝ่ายตรงข้าม + ขยายสู่ขั้วสุด
+   291→   291→        if (deep.strawMan.distortionThenExtreme) {
+   292→   292→          signals.push({
+   293→   293→            type,
+   294→   294→            matchedPatterns: ['SM-DEEP'],
+   295→   295→            matchedSentences: this.findSentencesWith(sentences, deep.strawMan.terms),
+   296→   296→            matchedText: deep.strawMan.terms,
+   297→   297→            score: 0.85,
+   298→   298→            weight: 0.8,
+   299→   299→            reasoning: `ตีความข้อโต้แย้งฝ่ายตรงข้าม แล้วขยายสู่ขั้วสุด (${deep.strawMan.terms.slice(0, 3).join(', ')})`,
+   300→   300→          });
+   301→   301→        } else if (deep.strawMan.hasDistortion) {
+   302→   302→          signals.push({
+   303→   303→            type,
+   304→   304→            matchedPatterns: ['SM-DEEP-DISTORT'],
+   305→   305→            matchedSentences: this.findSentencesWith(sentences, deep.strawMan.terms),
+   306→   306→            matchedText: deep.strawMan.terms,
+   307→   307→            score: 0.55,
+   308→   308→            weight: 0.6,
+   309→   309→            reasoning: `มีการตีความข้อโต้แย้งฝ่ายตรงข้าม (${deep.strawMan.terms.slice(0, 2).join(', ')})`,
+   310→   310→          });
+   311→   311→        }
+   312→   312→        break;
+   313→   313→      }
+   314→   314→      case 'red_herring': {
+   315→   315→        if (deep.redHerring.hasTopicShift) {
+   316→   316→          signals.push({
+   317→   317→            type,
+   318→   318→            matchedPatterns: ['RH-DEEP'],
+   319→   319→            matchedSentences: this.findSentencesWith(sentences, deep.redHerring.shiftMarkers),
+   320→   320→            matchedText: deep.redHerring.shiftMarkers,
+   321→   321→            score: 0.8,
+   322→   322→            weight: 0.75,
+   323→   323→            reasoning: `เปลี่ยนประเด็นด้วย marker: ${deep.redHerring.shiftMarkers.slice(0, 2).join(', ')}`,
+   324→   324→          });
+   325→   325→        }
+   326→   326→        break;
+   327→   327→      }
+   328→   328→      case 'false_dilemma': {
+   329→   329→        if (deep.falseDilemma.hasBinary && deep.falseDilemma.hasForcedChoice) {
+   330→   330→          signals.push({
+   331→   331→            type,
+   332→   332→            matchedPatterns: ['FD-DEEP'],
+   333→   333→            matchedSentences: this.findSentencesWith(sentences, deep.falseDilemma.binaryTerms),
+   334→   334→            matchedText: deep.falseDilemma.binaryTerms,
+   335→   335→            score: 0.85,
+   336→   336→            weight: 0.8,
+   337→   337→            reasoning: `จำกัดทางเลือกเป็น binary พร้อม forced choice`,
+   338→   338→          });
+   339→   339→        } else if (deep.falseDilemma.hasBinary) {
+   340→   340→          signals.push({
+   341→   341→            type,
+   342→   342→            matchedPatterns: ['FD-DEEP-BINARY'],
+   343→   343→            matchedSentences: this.findSentencesWith(sentences, deep.falseDilemma.binaryTerms),
+   344→   344→            matchedText: deep.falseDilemma.binaryTerms,
+   345→   345→            score: 0.65,
+   346→   346→            weight: 0.7,
+   347→   347→            reasoning: `มีคำบอก binary framing`,
+   348→   348→          });
+   349→   349→        }
+   350→   350→        break;
+   351→   351→      }
+   352→   352→      case 'hasty_generalization': {
+   353→   353→        // HG แท้: universal + few instances (quantifier mismatch)
+   354→   354→        // ถ้ามีแค่ universal ไม่มี few instances → weak signal (อาจเป็นประโยคปกติ)
+   355→   355→        if (deep.hastyGeneralization.universalThenFew) {
+   356→   356→          signals.push({
+   357→   357→            type,
+   358→   358→            matchedPatterns: ['HG-DEEP'],
+   359→   359→            matchedSentences: this.findSentencesWith(sentences, [
+   360→   360→              ...deep.hastyGeneralization.universalTerms,
+   361→   361→              ...deep.hastyGeneralization.fewTerms,
+   362→   362→            ]),
+   363→   363→            matchedText: [...deep.hastyGeneralization.universalTerms, ...deep.hastyGeneralization.fewTerms],
+   364→   364→            score: 0.9,
+   365→   365→            weight: 0.85,
+   366→   366→            reasoning: `quantifier mismatch: ใช้คำสากล (${deep.hastyGeneralization.universalTerms.slice(0, 2).join(', ')}) แต่อ้างตัวอย่างน้อย (${deep.hastyGeneralization.fewTerms.slice(0, 2).join(', ')})`,
+   367→   367→          });
+   368→   368→        } else if (deep.hastyGeneralization.hasUniversal && deep.hastyGeneralization.hasFewInstances) {
+   369→   369→          signals.push({
+   370→   370→            type,
+   371→   371→            matchedPatterns: ['HG-DEEP-UNIVERSAL'],
+   372→   372→            matchedSentences: this.findSentencesWith(sentences, deep.hastyGeneralization.universalTerms),
+   373→   373→            matchedText: deep.hastyGeneralization.universalTerms,
+   374→   374→            score: 0.6,
+   375→   375→            weight: 0.65,
+   376→   376→            reasoning: `ใช้คำระบุปริมาณสากล`,
+   377→   377→          });
+   378→   378→        }
+   379→   379→        break;
+   380→   380→      }
+   381→   381→      case 'false_cause': {
+   382→   382→        if (deep.falseCause.temporalThenCausal) {
+   383→   383→          signals.push({
+   384→   384→            type,
+   385→   385→            matchedPatterns: ['FC-DEEP'],
+   386→   386→            matchedSentences: this.findSentencesWith(sentences, deep.falseCause.terms),
+   387→   387→            matchedText: deep.falseCause.terms,
+   388→   388→            score: 0.85,
+   389→   389→            weight: 0.8,
+   390→   390→            reasoning: `temporal→causal: อ้างเหตุการณ์ก่อนหน้า (${deep.falseCause.terms.slice(0, 2).join(', ')}) แล้วสรุปเป็นเหตุผล`,
+   391→   391→          });
+   392→   392→        }
+   393→   393→        break;
+   394→   394→      }
+   395→   395→      case 'appeal_to_authority': {
+   396→   396→        // AA แท้: authority + authority เป็น evidence
+   397→   397→        if (deep.appealToAuthority.hasAuthority && deep.appealToAuthority.authorityIsEvidence) {
+   398→   398→          signals.push({
+   399→   399→            type,
+   400→   400→            matchedPatterns: ['AA-DEEP'],
+   401→   401→            matchedSentences: this.findSentencesWith(sentences, deep.appealToAuthority.terms),
+   402→   402→            matchedText: deep.appealToAuthority.terms,
+   403→   403→            score: 0.85,
+   404→   404→            weight: 0.8,
+   405→   405→            reasoning: `อ้างผู้มีอำนาจเป็นหลักฐานหลัก (${deep.appealToAuthority.terms.slice(0, 2).join(', ')})`,
+   406→   406→          });
+   407→   407→        } else if (deep.appealToAuthority.hasAuthority) {
+   408→   408→          signals.push({
+   409→   409→            type,
+   410→   410→            matchedPatterns: ['AA-DEEP-MENTION'],
+   411→   411→            matchedSentences: this.findSentencesWith(sentences, deep.appealToAuthority.terms),
+   412→   412→            matchedText: deep.appealToAuthority.terms,
+   413→   413→            score: 0.55,
+   414→   414→            weight: 0.6,
+   415→   415→            reasoning: `กล่าวถึงผู้มีอำนาจ`,
+   416→   416→          });
+   417→   417→        }
+   418→   418→        break;
+   419→   419→      }
+   420→   420→      case 'appeal_to_popularity': {
+   421→   421→        if (deep.appealToPopularity.hasPopularity && deep.appealToPopularity.popularityIsEvidence) {
+   422→   422→          signals.push({
+   423→   423→            type,
+   424→   424→            matchedPatterns: ['AP-DEEP'],
+   425→   425→            matchedSentences: this.findSentencesWith(sentences, deep.appealToPopularity.terms),
+   426→   426→            matchedText: deep.appealToPopularity.terms,
+   427→   427→            score: 0.85,
+   428→   428→            weight: 0.8,
+   429→   429→            reasoning: `อ้างความนิยมเป็นหลักฐาน (${deep.appealToPopularity.terms.slice(0, 2).join(', ')})`,
+   430→   430→          });
+   431→   431→        } else if (deep.appealToPopularity.hasPopularity) {
+   432→   432→          signals.push({
+   433→   433→            type,
+   434→   434→            matchedPatterns: ['AP-DEEP-MENTION'],
+   435→   435→            matchedSentences: this.findSentencesWith(sentences, deep.appealToPopularity.terms),
+   436→   436→            matchedText: deep.appealToPopularity.terms,
+   437→   437→            score: 0.6,
+   438→   438→            weight: 0.65,
+   439→   439→            reasoning: `กล่าวถึงความนิยม`,
+   440→   440→          });
+   441→   441→        }
+   442→   442→        break;
+   443→   443→      }
+   444→   444→      case 'slippery_slope': {
+   445→   445→        if (deep.slipperySlope.hasCausalChain && deep.slipperySlope.chainLength >= 1) {
+   446→   446→          signals.push({
+   447→   447→            type,
+   448→   448→            matchedPatterns: ['SS-DEEP'],
+   449→   449→            matchedSentences: this.findSentencesWith(sentences, deep.slipperySlope.terms),
+   450→   450→            matchedText: deep.slipperySlope.terms,
+   451→   451→            score: 0.85 + Math.min(0.1, deep.slipperySlope.chainLength * 0.03),
+   452→   452→            weight: 0.8,
+   453→   453→            reasoning: `causal chain ความยาว ${deep.slipperySlope.chainLength} ขั้น`,
+   454→   454→          });
+   455→   455→        }
+   456→   456→        break;
+   457→   457→      }
+   458→   458→      case 'circular_reasoning': {
+   459→   459→        if (deep.circularReasoning.hasTermRepetition) {
+   460→   460→          signals.push({
+   461→   461→            type,
+   462→   462→            matchedPatterns: ['CR-DEEP'],
+   463→   463→            matchedSentences: [],
+   464→   464→            matchedText: deep.circularReasoning.repeatedTerms,
+   465→   465→            score: 0.85,
+   466→   466→            weight: 0.8,
+   467→   467→            reasoning: `พบวลีที่ซ้ำกัน: "${deep.circularReasoning.repeatedTerms.slice(0, 2).join('", "')}" — ข้อสรุปอ้างข้อตั้งเดิม`,
+   468→   468→          });
+   469→   469→        } else if (deep.circularReasoning.hasCircularPhrase) {
+   470→   470→          signals.push({
+   471→   471→            type,
+   472→   472→            matchedPatterns: ['CR-DEEP-PHRASE'],
+   473→   473→            matchedSentences: [],
+   474→   474→            matchedText: [],
+   475→   475→            score: 0.9,
+   476→   476→            weight: 0.8,
+   477→   477→            reasoning: `ใช้วลี circular`,
+   478→   478→          });
+   479→   479→        } else if (deep.circularReasoning.detected) {
+   480→   480→          // mutual reference pattern: "A เพราะ B และ B ... A"
+   481→   481→          signals.push({
+   482→   482→            type,
+   483→   483→            matchedPatterns: ['CR-DEEP-MUTUAL'],
+   484→   484→            matchedSentences: [],
+   485→   485→            matchedText: [],
+   486→   486→            score: 0.85,
+   487→   487→            weight: 0.8,
+   488→   488→            reasoning: `พบการอ้างอิงซึ่งกันและกัน (mutual reference): A เพราะ B และ B อ้างกลับไปที่ A`,
+   489→   489→          });
+   490→   490→        }
+   491→   491→        break;
+   492→   492→      }
+   493→   493→      case 'cherry_picking': {
+   494→   494→        // CP แท้: single case OR evidence rejection
+   495→   495→        if (deep.cherryPicking.hasEvidenceRejection) {
+   496→   496→          signals.push({
+   497→   497→            type,
+   498→   498→            matchedPatterns: ['CP-DEEP-REJECT'],
+   499→   499→            matchedSentences: this.findSentencesWith(sentences, deep.cherryPicking.rejectionTerms),
+   500→   500→            matchedText: deep.cherryPicking.rejectionTerms,
+   501→   501→            score: 0.9,
+   502→   502→            weight: 0.85,
+   503→   503→            reasoning: `ปฏิเสธหลักฐานที่ขัดแย้ง: ${deep.cherryPicking.rejectionTerms.slice(0, 2).join(', ')}`,
+   504→   504→          });
+   505→   505→        }
+   506→   506→        if (deep.cherryPicking.hasSingleCase) {
+   507→   507→          signals.push({
+   508→   508→            type,
+   509→   509→            matchedPatterns: ['CP-DEEP-SINGLE'],
+   510→   510→            matchedSentences: this.findSentencesWith(sentences, deep.cherryPicking.singleCaseTerms),
+   511→   511→            matchedText: deep.cherryPicking.singleCaseTerms,
+   512→   512→            score: 0.8,
+   513→   513→            weight: 0.75,
+   514→   514→            reasoning: `อ้างหลักฐานเพียงกรณีเดียว: ${deep.cherryPicking.singleCaseTerms.slice(0, 2).join(', ')}`,
+   515→   515→          });
+   516→   516→        }
+   517→   517→        break;
+   518→   518→      }
+   519→   519→      case 'burden_of_proof': {
+   520→   520→        if (deep.burdenOfProof.hasBurdenShift) {
+   521→   521→          signals.push({
+   522→   522→            type,
+   523→   523→            matchedPatterns: ['BP-DEEP'],
+   524→   524→            matchedSentences: this.findSentencesWith(sentences, deep.burdenOfProof.terms),
+   525→   525→            matchedText: deep.burdenOfProof.terms,
+   526→   526→            score: 0.85,
+   527→   527→            weight: 0.8,
+   528→   528→            reasoning: `ผลักภาระพิสูจน์: ${deep.burdenOfProof.terms.slice(0, 2).join(', ')}`,
+   529→   529→          });
+   530→   530→        }
+   531→   531→        if (deep.burdenOfProof.hasAbsenceClaim) {
+   532→   532→          signals.push({
+   533→   533→            type,
+   534→   534→            matchedPatterns: ['BP-DEEP-ABSENCE'],
+   535→   535→            matchedSentences: [],
+   536→   536→            matchedText: [],
+   537→   537→            score: 0.85,
+   538→   538→            weight: 0.8,
+   539→   539→            reasoning: `อ้างการขาดหลักฐานพิสูจน์ว่าเท็จ = ข้ออ้างจริง`,
+   540→   540→          });
+   541→   541→        }
+   542→   542→        break;
+   543→   543→      }
+   544→   544→    }
+   545→   545→  }
+   546→   546→
+   547→   547→  /**
+   548→   548→   * Apply deep filter — ULTRA CONSERVATIVE: ไม่ลด score (เก็บ regex signals ไว้ทั้งหมด)
+   549→   549→   * การกรอง false positive ทำโดยการทำให้ patterns เฉพาะเจาะจง ไม่ใช่การลด score
+   550→   550→   */
+   551→   551→  private applyDeepFilter(
+   552→   552→    candidateMap: Map<FallacyType, FallacySignal[]>,
+   553→   553→    deep: DeepFeatures,
+   554→   554→  ): Map<FallacyType, FallacySignal[]> {
+   555→   555→    return new Map(candidateMap);
+   556→   556→  }
+   557→   557→
+   558→   558→  /**
+   559→   559→   * เพิ่ม missed detections — ถ้า DeepFeatures บอกว่ามี type นี้ชัดเจน แต่ไม่มีใน candidateMap
+   560→   560→   */
+   561→   561→  private addMissedDetections(
+   562→   562→    candidateMap: Map<FallacyType, FallacySignal[]>,
+   563→   563→    deep: DeepFeatures,
+   564→   564→    text: string,
+   565→   565→    sentences: Sentence[],
+   566→   566→  ): void {
+   567→   567→    // ถ้า DeepFeatures บอกว่า cherry_picking ชัด แต่ candidateMap ไม่มี ให้เพิ่ม
+   568→   568→    if (deep.cherryPicking.detected && !candidateMap.has('cherry_picking')) {
+   569→   569→      const sigs: FallacySignal[] = [];
+   570→   570→      if (deep.cherryPicking.hasEvidenceRejection) {
+   571→   571→        sigs.push({
+   572→   572→          type: 'cherry_picking',
+   573→   573→          matchedPatterns: ['CP-DEEP-REJECT-ADD'],
+   574→   574→          matchedSentences: this.findSentencesWith(sentences, deep.cherryPicking.rejectionTerms),
+   575→   575→          matchedText: deep.cherryPicking.rejectionTerms,
+   576→   576→          score: 0.85,
+   577→   577→          weight: 0.8,
+   578→   578→          reasoning: `ปฏิเสธหลักฐานที่ขัดแย้ง: ${deep.cherryPicking.rejectionTerms.slice(0, 2).join(', ')}`,
+   579→   579→        });
+   580→   580→      }
+   581→   581→      if (deep.cherryPicking.hasSingleCase) {
+   582→   582→        sigs.push({
+   583→   583→          type: 'cherry_picking',
+   584→   584→          matchedPatterns: ['CP-DEEP-SINGLE-ADD'],
+   585→   585→          matchedSentences: this.findSentencesWith(sentences, deep.cherryPicking.singleCaseTerms),
+   586→   586→          matchedText: deep.cherryPicking.singleCaseTerms,
+   587→   587→          score: 0.75,
+   588→   588→          weight: 0.7,
+   589→   589→          reasoning: `อ้างหลักฐานเพียงกรณีเดียว: ${deep.cherryPicking.singleCaseTerms.slice(0, 2).join(', ')}`,
+   590→   590→        });
+   591→   591→      }
+   592→   592→      if (sigs.length > 0) candidateMap.set('cherry_picking', sigs);
+   593→   593→    }
+   594→   594→
+   595→   595→    // ถ้า burden_of_proof ชัด แต่ไม่มี
+   596→   596→    if (deep.burdenOfProof.detected && !candidateMap.has('burden_of_proof')) {
+   597→   597→      const sigs: FallacySignal[] = [];
+   598→   598→      if (deep.burdenOfProof.hasBurdenShift) {
+   599→   599→        sigs.push({
+   600→   600→          type: 'burden_of_proof',
+   601→   601→          matchedPatterns: ['BP-DEEP-ADD'],
+   602→   602→          matchedSentences: this.findSentencesWith(sentences, deep.burdenOfProof.terms),
+   603→   603→          matchedText: deep.burdenOfProof.terms,
+   604→   604→          score: 0.8,
+   605→   605→          weight: 0.75,
+   606→   606→          reasoning: `ผลักภาระพิสูจน์: ${deep.burdenOfProof.terms.slice(0, 2).join(', ')}`,
+   607→   607→        });
+   608→   608→      }
+   609→   609→      if (sigs.length > 0) candidateMap.set('burden_of_proof', sigs);
+   610→   610→    }
+   611→   611→
+   612→   612→    // ถ้า ad_hominem ชัด (attack + dismissal) แต่ไม่มี
+   613→   613→    if (deep.personAttack.attackThenDismissal && !candidateMap.has('ad_hominem')) {
+   614→   614→      candidateMap.set('ad_hominem', [{
+   615→   615→        type: 'ad_hominem',
+   616→   616→        matchedPatterns: ['AH-DEEP-ADD'],
+   617→   617→        matchedSentences: this.findSentencesWith(sentences, deep.personAttack.attackTerms),
+   618→   618→        matchedText: deep.personAttack.attackTerms,
+   619→   619→        score: 0.85,
+   620→   620→        weight: 0.8,
+   621→   621→        reasoning: `โจมตี${this.targetLabel(deep.personAttack.target)}พร้อม dismiss ข้อโต้แย้ง`,
+   622→   622→      }]);
+   623→   623→    }
+   624→   624→
+   625→   625→    // ถ้า false_cause ชัด (temporal→causal) แต่ไม่มี
+   626→   626→    if (deep.falseCause.temporalThenCausal && !candidateMap.has('false_cause')) {
+   627→   627→      candidateMap.set('false_cause', [{
+   628→   628→        type: 'false_cause',
+   629→   629→        matchedPatterns: ['FC-DEEP-ADD'],
+   630→   630→        matchedSentences: this.findSentencesWith(sentences, deep.falseCause.terms),
+   631→   631→        matchedText: deep.falseCause.terms,
+   632→   632→        score: 0.8,
+   633→   633→        weight: 0.75,
+   634→   634→        reasoning: `temporal→causal: อ้างเหตุการณ์ก่อนหน้าแล้วสรุปเป็นเหตุผล`,
+   635→   635→      }]);
+   636→   636→    }
+   637→   637→
+   638→   638→    // ถ้า circular_reasoning ชัด (term repetition) แต่ไม่มี
+   639→   639→    if (deep.circularReasoning.hasTermRepetition && !candidateMap.has('circular_reasoning')) {
+   640→   640→      candidateMap.set('circular_reasoning', [{
+   641→   641→        type: 'circular_reasoning',
+   642→   642→        matchedPatterns: ['CR-DEEP-ADD'],
+   643→   643→        matchedSentences: [],
+   644→   644→        matchedText: deep.circularReasoning.repeatedTerms,
+   645→   645→        score: 0.8,
+   646→   646→        weight: 0.75,
+   647→   647→        reasoning: `พบวลีที่ซ้ำกัน: "${deep.circularReasoning.repeatedTerms.slice(0, 2).join('", "')}"`,
+   648→   648→      }]);
+   649→   649→    }
+   650→   650→
+   651→   651→    // ถ้า circular_reasoning แบบ mutual reference (A เพราะ B และ B ... A) แต่ไม่มี
+   652→   652→    if (deep.circularReasoning.detected && !deep.circularReasoning.hasTermRepetition && !deep.circularReasoning.hasCircularPhrase && !candidateMap.has('circular_reasoning')) {
+   653→   653→      candidateMap.set('circular_reasoning', [{
+   654→   654→        type: 'circular_reasoning',
+   655→   655→        matchedPatterns: ['CR-DEEP-MUTUAL-ADD'],
+   656→   656→        matchedSentences: [],
+   657→   657→        matchedText: [],
+   658→   658→        score: 0.85,
+   659→   659→        weight: 0.8,
+   660→   660→        reasoning: `พบการอ้างอิงซึ่งกันและกัน (mutual reference)`,
+   661→   661→      }]);
+   662→   662→    }
+   663→   663→
+   664→   664→    // ถ้า appeal_to_authority ชัด แต่ไม่มี
+   665→   665→    if (deep.appealToAuthority.authorityIsEvidence && !candidateMap.has('appeal_to_authority')) {
+   666→   666→      candidateMap.set('appeal_to_authority', [{
+   667→   667→        type: 'appeal_to_authority',
+   668→   668→        matchedPatterns: ['AA-DEEP-ADD'],
+   669→   669→        matchedSentences: this.findSentencesWith(sentences, deep.appealToAuthority.terms),
+   670→   670→        matchedText: deep.appealToAuthority.terms,
+   671→   671→        score: 0.8,
+   672→   672→        weight: 0.75,
+   673→   673→        reasoning: `อ้างผู้มีอำนาจเป็นหลักฐานหลัก`,
+   674→   674→      }]);
+   675→   675→    }
+   676→   676→
+   677→   677→    // ถ้า appeal_to_popularity ชัด แต่ไม่มี
+   678→   678→    if (deep.appealToPopularity.popularityIsEvidence && !candidateMap.has('appeal_to_popularity')) {
+   679→   679→      candidateMap.set('appeal_to_popularity', [{
+   680→   680→        type: 'appeal_to_popularity',
+   681→   681→        matchedPatterns: ['AP-DEEP-ADD'],
+   682→   682→        matchedSentences: this.findSentencesWith(sentences, deep.appealToPopularity.terms),
+   683→   683→        matchedText: deep.appealToPopularity.terms,
+   684→   684→        score: 0.8,
+   685→   685→        weight: 0.75,
+   686→   686→        reasoning: `อ้างความนิยมเป็นหลักฐาน`,
+   687→   687→      }]);
+   688→   688→    }
+   689→   689→
+   690→   690→    // ถ้า slippery_slope ชัด แต่ไม่มี
+   691→   691→    if (deep.slipperySlope.hasCausalChain && !candidateMap.has('slippery_slope')) {
+   692→   692→      candidateMap.set('slippery_slope', [{
+   693→   693→        type: 'slippery_slope',
+   694→   694→        matchedPatterns: ['SS-DEEP-ADD'],
+   695→   695→        matchedSentences: this.findSentencesWith(sentences, deep.slipperySlope.terms),
+   696→   696→        matchedText: deep.slipperySlope.terms,
+   697→   697→        score: 0.8,
+   698→   698→        weight: 0.75,
+   699→   699→        reasoning: `causal chain ความยาว ${deep.slipperySlope.chainLength} ขั้น`,
+   700→   700→      }]);
+   701→   701→    }
+   702→   702→
+   703→   703→    // ถ้า straw_man ชัด แต่ไม่มี
+   704→   704→    if (deep.strawMan.distortionThenExtreme && !candidateMap.has('straw_man')) {
+   705→   705→      candidateMap.set('straw_man', [{
+   706→   706→        type: 'straw_man',
+   707→   707→        matchedPatterns: ['SM-DEEP-ADD'],
+   708→   708→        matchedSentences: this.findSentencesWith(sentences, deep.strawMan.terms),
+   709→   709→        matchedText: deep.strawMan.terms,
+   710→   710→        score: 0.8,
+   711→   711→        weight: 0.75,
+   712→   712→        reasoning: `ตีความข้อโต้แย้งฝ่ายตรงข้ามแล้วขยายสู่ขั้วสุด`,
+   713→   713→      }]);
+   714→   714→    }
+   715→   715→
+   716→   716→    // ถ้า red_herring ชัด แต่ไม่มี
+   717→   717→    if (deep.redHerring.hasTopicShift && !candidateMap.has('red_herring')) {
+   718→   718→      candidateMap.set('red_herring', [{
+   719→   719→        type: 'red_herring',
+   720→   720→        matchedPatterns: ['RH-DEEP-ADD'],
+   721→   721→        matchedSentences: this.findSentencesWith(sentences, deep.redHerring.shiftMarkers),
+   722→   722→        matchedText: deep.redHerring.shiftMarkers,
+   723→   723→        score: 0.8,
+   724→   724→        weight: 0.75,
+   725→   725→        reasoning: `เปลี่ยนประเด็นด้วย marker: ${deep.redHerring.shiftMarkers.slice(0, 2).join(', ')}`,
+   726→   726→      }]);
+   727→   727→    }
+   728→   728→
+   729→   729→    // ถ้า false_dilemma ชัด แต่ไม่มี
+   730→   730→    if (deep.falseDilemma.hasBinary && deep.falseDilemma.hasForcedChoice && !candidateMap.has('false_dilemma')) {
+   731→   731→      candidateMap.set('false_dilemma', [{
+   732→   732→        type: 'false_dilemma',
+   733→   733→        matchedPatterns: ['FD-DEEP-ADD'],
+   734→   734→        matchedSentences: this.findSentencesWith(sentences, deep.falseDilemma.binaryTerms),
+   735→   735→        matchedText: deep.falseDilemma.binaryTerms,
+   736→   736→        score: 0.8,
+   737→   737→        weight: 0.75,
+   738→   738→        reasoning: `จำกัดทางเลือกเป็น binary พร้อม forced choice`,
+   739→   739→      }]);
+   740→   740→    }
+   741→   741→
+   742→   742→    // ถ้า hasty_generalization ชัด แต่ไม่มี
+   743→   743→    if (deep.hastyGeneralization.universalThenFew && !candidateMap.has('hasty_generalization')) {
+   744→   744→      candidateMap.set('hasty_generalization', [{
+   745→   745→        type: 'hasty_generalization',
+   746→   746→        matchedPatterns: ['HG-DEEP-ADD'],
+   747→   747→        matchedSentences: this.findSentencesWith(sentences, [
+   748→   748→          ...deep.hastyGeneralization.universalTerms,
+   749→   749→          ...deep.hastyGeneralization.fewTerms,
+   750→   750→        ]),
+   751→   751→        matchedText: [...deep.hastyGeneralization.universalTerms, ...deep.hastyGeneralization.fewTerms],
+   752→   752→        score: 0.8,
+   753→   753→        weight: 0.75,
+   754→   754→        reasoning: `quantifier mismatch: ใช้คำสากลแต่อ้างตัวอย่างน้อย`,
+   755→   755→      }]);
+   756→   756→    }
+   757→   757→  }
+   758→   758→
+   759→   759→  /**
+   760→   760→   * Conflict resolution — แยกประเภทที่ทับซ้อนโดยใช้ DeepFeatures
+   761→   761→   * ใช้ ULTRA CONSERVATIVE approach: ไม่ลบ type ถ้า regex จับอย่างน้อย 1 pattern
+   762→   762→   * (regex ผ่านมา 100% ใน single tests จึงเชื่อถือได้)
+   763→   763→   */
+   764→   764→  private resolveConflicts(
+   765→   765→    candidateMap: Map<FallacyType, FallacySignal[]>,
+   766→   766→    deep: DeepFeatures,
+   767→   767→  ): Map<FallacyType, FallacySignal[]> {
+   768→   768→    // ULTRA CONSERVATIVE: ไม่ลบอะไรเลย — ให้ทุก type ที่ regex จับแสดงผล
+   769→   769→    // เพราะ regex ผ่านการทดสอบ 100% ใน single examples
+   770→   770→    // การลบอาจทำให้พลาด detections ที่ถูกต้อง
+   771→   771→    return new Map(candidateMap);
+   772→   772→  }
+   773→   773→
+   774→   774→  // ===== Helper methods =====
+   775→   775→
+   776→   776→  private findSentencesWith(sentences: Sentence[], terms: string[]): number[] {
+   777→   777→    if (terms.length === 0) return [];
+   778→   778→    return sentences
+   779→   779→      .filter((s) => terms.some((t) => s.text.includes(t)))
+   780→   780→      .map((s) => s.index);
+   781→   781→  }
+   782→   782→
+   783→   783→  private targetLabel(target: DeepFeatures['personAttack']['target']): string {
+   784→   784→    switch (target) {
+   785→   785→      case 'identity': return 'ตัวตน/ลักษณะ';
+   786→   786→      case 'character': return 'นิสัย/บุคลิก';
+   787→   787→      case 'credential': return 'คุณวุฒิ/ความรู้';
+   788→   788→      case 'behavior': return 'พฤติกรรมในอดีต';
+   789→   789→      default: return 'บุคคล';
+   790→   790→    }
+   791→   791→  }
+   792→   792→
+   793→   793→  private computeStructureStrength(structure: ArgumentStructure, sentences: Sentence[]): number {
+   794→   794→    let strength = 0;
+   795→   795→    if (structure.premises.length > 0) strength += 0.4;
+   796→   796→    if (structure.conclusion) strength += 0.4;
+   797→   797→    if (structure.evidence.length > 0) strength += 0.2;
+   798→   798→    return Math.min(1, strength);
+   799→   799→  }
+   800→   800→
+   801→   801→  private buildDetectedFallacy(
+   802→   802→    type: FallacyType,
+   803→   803→    confidence: number,
+   804→   804→    falsePositiveRisk: number,
+   805→   805→    signals: FallacySignal[],
+   806→   806→    sentences: Sentence[],
+   807→   807→    structure: ArgumentStructure,
+   808→   808→    features: ReturnType<SemanticAnalyzer['analyze']>,
+   809→   809→    deep: DeepFeatures,
+   810→   810→  ): DetectedFallacy {
+   811→   811→    const meta = FALLACY_META[type];
+   812→   812→    const matchedSentencesIdx = [...new Set(signals.flatMap((s) => s.matchedSentences))];
+   813→   813→    const problematicSentences = matchedSentencesIdx
+   814→   814→      .map((i) => sentences[i]?.text)
+   815→   815→      .filter((t): t is string => Boolean(t));
+   816→   816→
+   817→   817→    const supportingSentences = sentences
+   818→   818→      .filter((s) => !matchedSentencesIdx.includes(s.index) && (s.role === 'premise' || s.role === 'evidence'))
+   819→   819→      .map((s) => s.text)
+   820→   820→      .slice(0, 3);
+   821→   821→
+   822→   822→    const reasoning = this.buildReasoning(type, signals, structure, features, sentences, deep);
+   823→   823→    const counterArguments = this.buildCounterArguments(type, structure, features);
+   824→   824→    const explanation = this.buildExplanation(type, confidence, signals);
+   825→   825→
+   826→   826→    return {
+   827→   827→      type,
+   828→   828→      nameTh: meta.nameTh,
+   829→   829→      nameEn: meta.nameEn,
+   830→   830→      confidence: Math.round(confidence * 100) / 100,
+   831→   831→      confidenceLabel: this.scorer.label(confidence),
+   832→   832→      explanation,
+   833→   833→      reasoning,
+   834→   834→      problematicSentences,
+   835→   835→      supportingSentences,
+   836→   836→      counterArguments,
+   837→   837→      falsePositiveRisk: Math.round(falsePositiveRisk * 100) / 100,
+   838→   838→      falsePositiveReason: this.scorer.explainFalsePositive(type, falsePositiveRisk, signals.length),
+   839→   839→      matchedPatterns: signals.flatMap((s) => s.matchedPatterns),
+   840→   840→    };
+   841→   841→  }
+   842→   842→
+   843→   843→  private buildExplanation(type: FallacyType, confidence: number, signals: FallacySignal[]): string {
+   844→   844→    const meta = FALLACY_META[type];
+   845→   845→    const mainReason = signals[0]?.reasoning ?? meta.shortTh;
+   846→   846→    return `${meta.nameTh} (${meta.nameEn}): ${meta.description} ในข้อความนี้พบว่า "${mainReason}" (ความมั่นใจ ${Math.round(confidence * 100)}%)`;
+   847→   847→  }
+   848→   848→
+   849→   849→  private buildReasoning(
+   850→   850→    type: FallacyType,
+   851→   851→    signals: FallacySignal[],
+   852→   852→    structure: ArgumentStructure,
+   853→   853→    features: ReturnType<SemanticAnalyzer['analyze']>,
+   854→   854→    sentences: Sentence[],
+   855→   855→    deep: DeepFeatures,
+   856→   856→  ): string[] {
+   857→   857→    const steps: string[] = [];
+   858→   858→    const meta = FALLACY_META[type];
+   859→   859→
+   860→   860→    steps.push(`ขั้นที่ 1: ตรวจสอบรูปแบบของ "${meta.nameTh}" — ${meta.shortTh}`);
+   861→   861→    steps.push(`ขั้นที่ 2: แยกประโยคออกเป็น ${sentences.length} ประโยค พบข้อตั้ง ${structure.premises.length} ข้อ ข้อสรุป ${structure.conclusion ? 1 : 0} ข้อ และหลักฐาน ${structure.evidence.length} ชิ้น`);
+   862→   862→
+   863→   863→    const regexSignals = signals.filter((s) => !s.matchedPatterns[0]?.includes('-DEEP'));
+   864→   864→    const deepSignals = signals.filter((s) => s.matchedPatterns[0]?.includes('-DEEP'));
+   865→   865→
+   866→   866→    if (regexSignals.length > 0) {
+   867→   867→      steps.push(`ขั้นที่ 3: จับคู่รูปแบบภาษา — พบรูปแบบที่ตรงกับกฎ ${regexSignals.map((s) => s.matchedPatterns.join(', ')).join('; ')}`);
+   868→   868→    }
+   869→   869→    if (deepSignals.length > 0) {
+   870→   870→      const stepNo = regexSignals.length > 0 ? 4 : 3;
+   871→   871→      steps.push(`ขั้นที่ ${stepNo}: วิเคราะห์โครงสร้างเชิงลึก — ${deepSignals[0].reasoning}`);
+   872→   872→    }
+   873→   873→    const finalStep = (regexSignals.length > 0 ? 4 : 3) + (deepSignals.length > 0 ? 1 : 0);
+   874→   874→    steps.push(`ขั้นที่ ${finalStep}: สรุปการตัดสิน — รวมคะแนนจากทุกสัญญาณ พิจารณาความเสี่ยง False Positive แล้วสรุปความมั่นใจ`);
+   875→   875→
+   876→   876→    return steps;
+   877→   877→  }
+   878→   878→
+   879→   879→  private buildCounterArguments(
+   880→   880→    type: FallacyType,
+   881→   881→    structure: ArgumentStructure,
+   882→   882→    features: ReturnType<SemanticAnalyzer['analyze']>,
+   883→   883→  ): string[] {
+   884→   884→    const counters: Record<FallacyType, string[]> = {
+   885→   885→      ad_hominem: [
+   886→   886→        'ข้อโต้แย้งควรถูกพิจารณาจากเนื้อหา ไม่ใช่จากตัวบุคคลที่กล่าว',
+   887→   887→        'แม้ผู้พูดจะมีข้อบกพร่อง ข้อโต้แย้งอาจยังคงมีเหตุผลที่ต้องพิจารณา',
+   888→   888→      ],
+   889→   889→      straw_man: [
+   890→   890→        'ควรอ้างข้อโต้แย้งของฝ่ายตรงข้ามตามตัวอักษรหรือให้ฝ่ายนั้นยืนยันด้วยตนเอง',
+   891→   891→        'การตีความใหม่อาจทำให้สูญเสียเจตนาดั้งเดิมของผู้พูด',
+   892→   892→      ],
+   893→   893→      red_herring: [
+   894→   894→        'ควรกลับมาที่ประเด็นหลักที่กำลังถกเถียงและตอบคำถามโดยตรง',
+   895→   895→        'ประเด็นที่นำมาเสนอแม้น่าสนใจ ก็ไม่ได้หักล้างประเด็นเดิม',
+   896→   896→      ],
+   897→   897→      false_dilemma: [
+   898→   898→        'อาจมีทางเลือกที่สามหรือมากกว่าที่ไม่ได้ถูกนำเสนอ',
+   899→   899→        'ขอให้ระบุเหตุผลที่ตัดทางเลือกอื่นออกไป',
+   900→   900→      ],
+   901→   901→      hasty_generalization: [
+   902→   902→        `ตัวอย่างที่มีอยู่ (${structure.premises.length} ข้อ) อาจไม่เพียงพอที่จะเป็นตัวแทนของประชากรทั้งหมด`,
+   903→   903→        'ควรเก็บตัวอย่างให้กว้างขวางและหลากหลายก่อนสรุป',
+   904→   904→      ],
+   905→   905→      false_cause: [
+   906→   906→        'ความสัมพันธ์เชิงเวลาไม่เท่ากับความสัมพันธ์เชิงเหตุผล ต้องแสดงกลไก',
+   907→   907→        'อาจมีตัวแปรภายนอกที่เป็นสาเหตุร่วมของทั้งสองเหตุการณ์',
+   908→   908→      ],
+   909→   909→      appeal_to_authority: [
+   910→   910→        'ผู้เชี่ยวชาญอาจเข้าข้างหรือผิดพลาดได้ ควรตรวจสอบข้อมูลและงานวิจัยต้นฉบับ',
+   911→   911→        'ผู้เชี่ยวชาญในสาขาหนึ่งอาจไม่ใช่ผู้เชี่ยวชาญในอีกสาขา',
+   912→   912→      ],
+   913→   913→      appeal_to_popularity: [
+   914→   914→        'ความนิยมไม่ได้แปลว่าถูกต้อง ความจริงไม่ได้ตัดสินโดยการลงคะแนน',
+   915→   915→        'ประวัติศาสตร์มีตัวอย่างมากมายที่ความเชื่อส่วนใหญ่เป็นเท็จ',
+   916→   916→      ],
+   917→   917→      slippery_slope: [
+   918→   918→        'แต่ละขั้นในลำดับเหตุการณ์ต้องมีหลักฐานแยกกัน มิฉะนั้นเป็นการคาดเดา',
+   919→   919→        'มักจะมีจุดที่สามารถหยุดหรือควบคุมลำดับเหตุการณ์ได้',
+   920→   920→      ],
+   921→   921→      circular_reasoning: [
+   922→   922→        'ข้อสรุปไม่สามารถอ้างข้อตั้งที่เป็นข้อสรุปเดียวกันได้ ต้องหาหลักฐานภายนอก',
+   923→   923→        'ควรนิยามคำและให้เหตุผลจากข้อเท็จจริงที่สังเกตได้',
+   924→   924→      ],
+   925→   925→      cherry_picking: [
+   926→   926→        'ควรนำเสนอข้อมูลทั้งหมดหรือตัวอย่างที่เป็นตัวแทน ไม่ใช่เฉพาะที่สนับสนุน',
+   927→   927→        'ควรอธิบายเหตุผลที่เลือกเฉพาะข้อมูลบางส่วนและละเว้นส่วนอื่น',
+   928→   928→      ],
+   929→   929→      burden_of_proof: [
+   930→   930→        'ผู้กล่าวอ้างเป็นผู้มีภาระพิสูจน์ข้ออ้างของตน ไม่ใช่ผู้ที่ปฏิเสธ',
+   931→   931→        'การที่พิสูจน์ไม่ได้ว่าเท็จ ไม่ได้แปลว่าเป็นจริง',
+   932→   932→      ],
+   933→   933→    };
+   934→   934→    return counters[type];
+   935→   935→  }
+   936→   936→}
+   937→   937→
+   938→   938→// Type alias สำหรับ helper
+   939→   939→type FallaySignalHelper = FallacySignal[];
+   940→   940→
