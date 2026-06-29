@@ -1,0 +1,105 @@
+// AxiomCore - Logical Fallacy Analysis System
+// Database schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 12 supported fallacy types are stored as a string enum code:
+// ad_hominem | straw_man | red_herring | false_dilemma | hasty_generalization
+// false_cause | appeal_to_authority | appeal_to_popularity | slippery_slope
+// circular_reasoning | cherry_picking | burden_of_proof
+
+model FallacyExample {
+  id          String   @id @default(cuid())
+  fallacyType String   // one of the 12 codes
+  difficulty  String   // easy | medium | hard | expert
+  text        String
+  explanation String
+  reason      String
+  label       String
+  createdAt   DateTime @default(now())
+
+  @@index([fallacyType])
+  @@index([difficulty])
+}
+
+model MixedFallacyExample {
+  id            String   @id @default(cuid())
+  primaryType   String
+  secondaryType String
+  combination   String // e.g. "ad_hominem+straw_man"
+  text          String
+  explanation   String
+  reason        String
+  createdAt     DateTime @default(now())
+
+  @@index([combination])
+  @@index([primaryType])
+}
+
+model DebateTopic {
+  id        String   @id @default(cuid())
+  category  String   // science | physics | mathematics | philosophy | economics | law | politics | ai | ml | quantum | religion | ethics | medicine | biology | energy | space | cybersecurity | blockchain | linguistics | history
+  title     String
+  premise   String
+  createdAt DateTime @default(now())
+
+  @@index([category])
+}
+
+model AnalysisSession {
+  id        String   @id @default(cuid())
+  title     String
+  createdAt DateTime @default(now())
+  messages  AnalysisMessage[]
+}
+
+model AnalysisMessage {
+  id        String   @id @default(cuid())
+  sessionId String
+  role      String   // user | assistant
+  content   String
+  result    String?  // JSON string of AnalysisResult for assistant messages
+  createdAt DateTime @default(now())
+  session   AnalysisSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+}
+
+model DetectionRule {
+  id           String   @id @default(cuid())
+  fallacyType  String
+  ruleCode     String
+  pattern      String   // regex pattern
+  description  String
+  weight       Float    // confidence weight
+  enabled      Boolean  @default(true)
+  falsePositiveCount  Int @default(0)
+  falseNegativeCount  Int @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([fallacyType])
+}
+
+model SelfImprovementLog {
+  id           String   @id @default(cuid())
+  iteration    Int
+  totalTested  Int
+  truePositive Int
+  falsePositive Int
+  falseNegative Int
+  trueNegative  Int
+  precision    Float
+  recall       Float
+  f1Score      Float
+  rulesAdjusted Int
+  notes        String
+  createdAt    DateTime @default(now())
+}
